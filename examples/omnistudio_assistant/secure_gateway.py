@@ -7,6 +7,7 @@ RASA_AUTH_TOKEN is held exclusively in the Render environment.
 from __future__ import annotations
 
 import json
+import math
 import jwt
 import os
 import signal
@@ -33,6 +34,91 @@ RASA_ROOT_URL = f"http://{RASA_HOST}:{RASA_PORT}/"
 MAX_BODY_BYTES = 16 * 1024
 MAX_MESSAGE_CHARS = 4000
 MAX_UPSTREAM_BYTES = 512 * 1024
+
+# Event-specific fields from the Rasa 3.6 HTTP API OpenAPI schema.
+RASA_EVENT_FIELDS = {
+    "user": {"text", "input_channel", "message_id", "parse_data"},
+    "bot": set(),
+    "session_started": set(),
+    "action": {"policy", "confidence", "name", "hide_rule_turn", "action_text"},
+    "slot": {"name", "value"},
+    "reset_slots": set(),
+    "restart": set(),
+    "reminder": set(),
+    "cancel_reminder": set(),
+    "pause": set(),
+    "resume": set(),
+    "followup": set(),
+    "export": set(),
+    "undo": set(),
+    "rewind": set(),
+    "agent": set(),
+    "entities": {"entities"},
+    "user_featurization": set(),
+    "action_execution_rejected": set(),
+    "form_validation": set(),
+    "loop_interrupted": set(),
+    "form": set(),
+    "active_loop": set(),
+}
+RASA_EVENT_COMMON_FIELDS = {"event", "timestamp", "metadata"}
+ENTITY_FIELDS = {"start", "end", "entity", "confidence", "extractor", "value", "role", "group"}
+
+
+def _validate_tracker_event(event: Any) -> str | None:
+    if not isinstance(event, dict):
+        return "event_object_required"
+    event_type = event.get("event")
+    if not isinstance(event_type, str) or event_type not in RASA_EVENT_FIELDS:
+        return "unsupported_event_type"
+    allowed = RASA_EVENT_COMMON_FIELDS | RASA_EVENT_FIELDS[event_type]
+    if set(event) - allowed:
+        return "unexpected_event_fields"
+    if "timestamp" in event and (not isinstance(event["timestamp"], int) or isinstance(event["timestamp"], bool)):
+        return "timestamp_must_be_integer"
+    if "metadata" in event and not isinstance(event["metadata"], dict):
+        return "metadata_must_be_object"
+
+    if event_type == "user":
+        for field in ("text", "input_channel", "message_id"):
+            if field in event and event[field] is not None and not isinstance(event[field], str):
+                return f"{field}_must_be_string"
+        if isinstance(event.get("text"), str) and len(event["text"]) > MAX_MESSAGE_CHARS:
+            return "text_too_long"
+        if "parse_data" in event and event["parse_data"] is not None and not isinstance(event["parse_data"], dict):
+            return "parse_data_must_be_object"
+    elif event_type == "action":
+        for field in ("policy", "name", "action_text"):
+            if field in event and event[field] is not None and not isinstance(event[field], str):
+                return f"{field}_must_be_string"
+        confidence = event.get("confidence")
+        if confidence is not None and (isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence)):
+            return "confidence_must_be_finite_number"
+        if "hide_rule_turn" in event and not isinstance(event["hide_rule_turn"], bool):
+            return "hide_rule_turn_must_be_boolean"
+    elif event_type == "slot":
+        if not isinstance(event.get("name"), str) or not event["name"].strip() or "value" not in event:
+            return "slot_requires_name_and_value"
+    elif event_type == "entities":
+        entities = event.get("entities")
+        if not isinstance(entities, list) or len(entities) > 100:
+            return "entities_must_be_array_of_at_most_100"
+        for entity in entities:
+            if not isinstance(entity, dict) or set(entity) - ENTITY_FIELDS:
+                return "invalid_entity_object"
+            if not isinstance(entity.get("entity"), str) or "value" not in entity:
+                return "entity_requires_name_and_value"
+            for field in ("start", "end"):
+                if field in entity and (not isinstance(entity[field], int) or isinstance(entity[field], bool)):
+                    return f"entity_{field}_must_be_integer"
+            confidence = entity.get("confidence")
+            if confidence is not None and (isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence)):
+                return "entity_confidence_must_be_finite_number"
+            for field in ("extractor", "role", "group"):
+                if field in entity and entity[field] is not None and not isinstance(entity[field], str):
+                    return f"entity_{field}_must_be_string"
+    return None
+
 
 if not RASA_AUTH_TOKEN:
     raise RuntimeError("RASA_AUTH_TOKEN is required")
@@ -303,16 +389,17 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
             })
             return
         if route == "/api/rasa/events":
-            text = body.get("text")
-            if not isinstance(text, str) or not text.strip() or len(text) > MAX_MESSAGE_CHARS:
-                self._send_json(400, {"error": "valid_text_required"})
+            event = body.get("event")
+            # Keep the earlier text-only client compatible while supporting the
+            # distinct Rasa OpenAPI payload for each event type.
+            if event is None and isinstance(body.get("text"), str):
+                text = body["text"].strip()
+                event = {"event": "user", "text": text, "input_channel": "rest"}
+            validation_error = _validate_tracker_event(event)
+            if validation_error:
+                self._send_json(400, {"error": validation_error})
                 return
-            self._proxy_rasa(uid, "POST", f"/conversations/{conversation}/tracker/events", [{
-                "event": "user",
-                "text": text.strip(),
-                "input_channel": "rest",
-                "metadata": {},
-            }])
+            self._proxy_rasa(uid, "POST", f"/conversations/{conversation}/tracker/events", [event])
             return
 
         self._send_json(404, {"error": "not_found"})
