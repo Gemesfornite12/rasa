@@ -7,6 +7,7 @@ RASA_AUTH_TOKEN is held exclusively in the Render environment.
 from __future__ import annotations
 
 import json
+import jwt
 import os
 import signal
 import subprocess
@@ -137,11 +138,21 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
         # Never trust a client-provided sender: the verified Firebase UID owns
         # this Rasa tracker, providing tracker isolation per signed-in account.
         upstream_body = _json_bytes({"sender": uid, "message": message})
+        now = int(time.time())
+        rasa_jwt = jwt.encode(
+            {
+                "user": {"username": uid, "role": "user"},
+                "iat": now,
+                "exp": now + 300,
+            },
+            RASA_AUTH_TOKEN,
+            algorithm="HS256",
+        )
         upstream = urllib.request.Request(
             RASA_URL,
             data=upstream_body,
             headers={
-                "Authorization": f"Bearer {RASA_AUTH_TOKEN}",
+                "Authorization": f"Bearer {rasa_jwt}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
@@ -179,7 +190,8 @@ def main() -> None:
         "-i", RASA_HOST,
         "-p", str(RASA_PORT),
         "--credentials", "credentials.yml",
-        "-t", RASA_AUTH_TOKEN,
+        "--jwt-secret", RASA_AUTH_TOKEN,
+        "--jwt-method", "HS256",
     ]
     rasa_process = subprocess.Popen(rasa_command, cwd="/app")
 
