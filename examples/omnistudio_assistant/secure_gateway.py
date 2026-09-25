@@ -599,5 +599,217 @@ def main() -> None:
                 rasa_process.kill()
 
 
+# Additional Felo tools for explicit YouTube-caption and webpage-reading requests.
+FELO_YOUTUBE_SUBTITLING_URL = "https://openapi.felo.ai/v2/youtube/subtitling"
+FELO_WEB_EXTRACT_URL = "https://openapi.felo.ai/v2/web/extract"
+YOUTUBE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{11}")
+CHAT_URL_PATTERN = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+YOUTUBE_SUMMARY_PATTERN = re.compile(
+    r"\b(?:resume|resumen|resumir|analiza|explicame|explícame)\b",
+    re.IGNORECASE,
+)
+YOUTUBE_INTENT_PATTERN = re.compile(
+    r"\b(?:transcribe|transcribir|transcripcion|transcripción|subtitulo|subtítulos|subtitulos|que dice|qué dice)\b",
+    re.IGNORECASE,
+)
+WEB_FETCH_INTENT_PATTERN = re.compile(
+    r"\b(?:lee|leer|resume|resumen|analiza|extrae|explicame|explícame|que dice|qué dice|revisa)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_youtube_video_code(message: str) -> str | None:
+    for raw_url in CHAT_URL_PATTERN.findall(message):
+        candidate_url = raw_url.rstrip(".,!?;:)]}\"'")
+        try:
+            parsed = urllib.parse.urlsplit(candidate_url)
+            host = (parsed.hostname or "").lower()
+            if host.startswith("www."):
+                host = host[4:]
+            code = ""
+            if host == "youtu.be":
+                code = parsed.path.strip("/").split("/")[0]
+            elif host in {"youtube.com", "m.youtube.com", "youtube-nocookie.com"}:
+                if parsed.path.rstrip("/") == "/watch":
+                    code = urllib.parse.parse_qs(parsed.query).get("v", [""])[0]
+                else:
+                    parts = [part for part in parsed.path.split("/") if part]
+                    if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live"}:
+                        code = parts[1]
+            if YOUTUBE_ID_PATTERN.fullmatch(code):
+                return code
+        except (ValueError, IndexError):
+            continue
+    return None
+
+
+def _extract_web_page_url(message: str) -> str | None:
+    for raw_url in CHAT_URL_PATTERN.findall(message):
+        candidate = raw_url.rstrip(".,!?;:)]}\"'")
+        try:
+            parsed = urllib.parse.urlsplit(candidate)
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            continue
+        if parsed.scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
+            continue
+        if host.startswith("www."):
+            host = host[4:]
+        if host in {"youtube.com", "m.youtube.com", "youtu.be", "youtube-nocookie.com"}:
+            continue
+        if host == "localhost" or host.endswith((".local", ".localhost", ".internal")):
+            continue
+        return candidate
+    return None
+
+
+def _felo_json_request(request: urllib.request.Request) -> dict[str, Any]:
+    if not FELO_API_KEY:
+        raise RuntimeError("felo_not_configured")
+    try:
+        response = urllib.request.urlopen(request, timeout=55)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            raise RuntimeError("felo_rate_limited") from None
+        if exc.code in (401, 403):
+            raise RuntimeError("felo_auth_failed") from None
+        raise RuntimeError("felo_provider_error") from None
+    with response:
+        raw = response.read(MAX_UPSTREAM_BYTES + 1)
+    if len(raw) > MAX_UPSTREAM_BYTES:
+        raise RuntimeError("felo_response_too_large")
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise RuntimeError("felo_invalid_response") from None
+    if not isinstance(payload, dict) or payload.get("status") not in {"ok", 200, "200"}:
+        raise RuntimeError("felo_provider_error")
+    return payload
+
+
+def _felo_youtube_subtitles(video_code: str) -> dict[str, str]:
+    if not FELO_API_KEY:
+        raise RuntimeError("felo_not_configured")
+    query = urllib.parse.urlencode({"video_code": video_code, "with_time": "false"})
+    request = urllib.request.Request(
+        f"{FELO_YOUTUBE_SUBTITLING_URL}?{query}",
+        headers={"Authorization": f"Bearer {FELO_API_KEY}", "Accept": "application/json"},
+        method="GET",
+    )
+    payload = _felo_json_request(request)
+    data = payload.get("data") or {}
+    title = data.get("title") if isinstance(data, dict) else ""
+    contents = data.get("contents", []) if isinstance(data, dict) else []
+    transcript = "\n".join(
+        item.get("text", "").strip()
+        for item in contents
+        if isinstance(item, dict) and isinstance(item.get("text"), str) and item.get("text", "").strip()
+    ) if isinstance(contents, list) else ""
+    return {
+        "title": title.strip() if isinstance(title, str) else "",
+        "transcript": transcript,
+        "url": f"https://www.youtube.com/watch?v={video_code}",
+    }
+
+
+def _felo_web_extract(url: str) -> dict[str, str]:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        raise RuntimeError("invalid_web_url")
+    if not FELO_API_KEY:
+        raise RuntimeError("felo_not_configured")
+    request = urllib.request.Request(
+        FELO_WEB_EXTRACT_URL,
+        data=_json_bytes({"url": url, "crawl_mode": "fast", "output_format": "text", "with_readability": True}),
+        headers={
+            "Authorization": f"Bearer {FELO_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    payload = _felo_json_request(request)
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        raise RuntimeError("felo_provider_error")
+    content = data.get("content", "")
+    if isinstance(content, dict):
+        content = next((content.get(key) for key in ("text", "markdown", "content", "html") if isinstance(content.get(key), str)), "")
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("felo_empty_content")
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    title = data.get("title") or metadata.get("title") or ""
+    return {"title": title.strip() if isinstance(title, str) else "", "content": content.strip(), "url": url}
+
+
+def _sara_proxy_with_felo_tools(self: SaraGatewayHandler, uid: str, method: str, path: str, body: Any = None) -> None:
+    if method == "POST" and path == "/webhooks/rest/webhook" and isinstance(body, dict):
+        message = body.get("message")
+        if isinstance(message, str):
+            video_code = _extract_youtube_video_code(message)
+            if video_code and YOUTUBE_SUMMARY_PATTERN.search(message):
+                if not FELO_API_KEY:
+                    self._send_json(200, [{"recipient_id": uid, "text": "La búsqueda de videos con Felo todavía no está configurada."}])
+                    return
+                if not _allow_web_search(uid):
+                    self._send_json(200, [{"recipient_id": uid, "text": "Llegaste al límite temporal de consultas a Felo. Inténtalo más tarde."}])
+                    return
+                try:
+                    video_url = f"https://www.youtube.com/watch?v={video_code}"
+                    result = _felo_web_search(f"Resume en español este video de YouTube: {video_url}")
+                    self._send_json(200, [{"recipient_id": uid, "text": _search_reply_text(result)}])
+                except (urllib.error.URLError, TimeoutError, OSError, ValueError, RuntimeError):
+                    self._send_json(200, [{"recipient_id": uid, "text": "No pude buscar información de ese video ahora."}])
+                return
+            if video_code and YOUTUBE_INTENT_PATTERN.search(message):
+                if not FELO_API_KEY:
+                    self._send_json(200, [{"recipient_id": uid, "text": "La función de YouTube todavía no está configurada."}])
+                    return
+                if not _allow_web_search(uid):
+                    self._send_json(200, [{"recipient_id": uid, "text": "Llegaste al límite temporal de consultas a Felo. Inténtalo más tarde."}])
+                    return
+                try:
+                    result = _felo_youtube_subtitles(video_code)
+                    transcript = result["transcript"]
+                    if not transcript:
+                        text = f"No encontré subtítulos disponibles para este video: {result['url']}"
+                    else:
+                        limit = 8000
+                        shown = transcript[:limit]
+                        title = result["title"] or "Video de YouTube"
+                        text = f"Subtítulos de YouTube: {title}\n{result['url']}\n\n{shown}"
+                        if len(transcript) > limit:
+                            text += "\n\n[Transcripción recortada para caber en el chat.]"
+                    self._send_json(200, [{"recipient_id": uid, "text": text}])
+                except (urllib.error.URLError, TimeoutError, OSError, ValueError, RuntimeError):
+                    self._send_json(200, [{"recipient_id": uid, "text": "No pude obtener los subtítulos de ese video ahora."}])
+                return
+
+            page_url = _extract_web_page_url(message)
+            if page_url and WEB_FETCH_INTENT_PATTERN.search(message):
+                if not FELO_API_KEY:
+                    self._send_json(200, [{"recipient_id": uid, "text": "La lectura de páginas con Felo todavía no está configurada."}])
+                    return
+                if not _allow_web_search(uid):
+                    self._send_json(200, [{"recipient_id": uid, "text": "Llegaste al límite temporal de consultas a Felo. Inténtalo más tarde."}])
+                    return
+                try:
+                    result = _felo_web_extract(page_url)
+                    limit = 8000
+                    title = result["title"] or "Contenido de la página"
+                    text = f"{title}\nFuente: {result['url']}\n\n{result['content'][:limit]}"
+                    if len(result["content"]) > limit:
+                        text += "\n\n[Contenido recortado para caber en el chat.]"
+                    self._send_json(200, [{"recipient_id": uid, "text": text}])
+                except (urllib.error.URLError, TimeoutError, OSError, ValueError, RuntimeError):
+                    self._send_json(200, [{"recipient_id": uid, "text": "No pude extraer el contenido de esa página ahora."}])
+                return
+    _ORIGINAL_SARA_PROXY_RASA(self, uid, method, path, body)
+
+
+_ORIGINAL_SARA_PROXY_RASA = SaraGatewayHandler._proxy_rasa
+SaraGatewayHandler._proxy_rasa = _sara_proxy_with_felo_tools
+
+
 if __name__ == "__main__":
     main()
