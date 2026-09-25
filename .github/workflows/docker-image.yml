@@ -14,17 +14,32 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
 
-      - name: Build local base image
-        run: docker buildx bake --load --set '*.platform=linux/amd64' -f docker/docker-bake.hcl base
+      - name: Read Poetry version
+        run: echo "POETRY_VERSION=$(scripts/poetry-version.sh)" >> "$GITHUB_ENV"
 
-      - name: Build local Poetry base image
-        run: docker buildx bake --load --set '*.platform=linux/amd64' -f docker/docker-bake.hcl base-poetry
+      - name: Build base image
+        run: docker build --file docker/Dockerfile.base --tag rasa/rasa:base-localdev .
 
-      - name: Build local builder base image
-        run: docker buildx bake --load --set '*.platform=linux/amd64' -f docker/docker-bake.hcl base-builder
+      - name: Build Poetry base image
+        run: >-
+          docker build --file docker/Dockerfile.base-poetry
+          --build-arg IMAGE_BASE_NAME=rasa/rasa
+          --build-arg BASE_IMAGE_HASH=localdev
+          --build-arg POETRY_VERSION="$POETRY_VERSION"
+          --tag "rasa/rasa:base-poetry-$POETRY_VERSION" .
 
-      - name: Build Rasa Docker image
-        run: docker buildx bake --load --set '*.platform=linux/amd64' -f docker/docker-bake.hcl default
+      - name: Build builder base image
+        run: >-
+          docker build --file docker/Dockerfile.base-builder
+          --build-arg IMAGE_BASE_NAME=rasa/rasa
+          --build-arg POETRY_VERSION="$POETRY_VERSION"
+          --tag rasa/rasa:base-builder-localdev .
+
+      - name: Build Rasa image
+        run: >-
+          docker build --file Dockerfile
+          --build-arg IMAGE_BASE_NAME=rasa/rasa
+          --build-arg BASE_IMAGE_HASH=localdev
+          --build-arg BASE_BUILDER_IMAGE_HASH=localdev
+          --tag rasa/rasa:ci .
