@@ -245,7 +245,7 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
         if uid is None:
             return
 
-        body = self._read_json_body(allow_empty=(route == "/api/rasa/predict"))
+        body = self._read_json_body(allow_empty=(route in {"/api/rasa/predict", "/api/rasa/reset"}))
         if body is None:
             return
 
@@ -274,6 +274,12 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
         conversation = urllib.parse.quote(uid, safe="")
         if route == "/api/rasa/predict":
             self._proxy_rasa(uid, "POST", f"/conversations/{conversation}/predict", None)
+            return
+        if route == "/api/rasa/reset":
+            # Append Rasa's restart event; do not expose the unsafe tracker-replace API.
+            self._proxy_rasa(uid, "POST", f"/conversations/{conversation}/tracker/events", {
+                "event": "restart",
+            })
             return
         if route == "/api/rasa/trigger-intent":
             name = body.get("name")
