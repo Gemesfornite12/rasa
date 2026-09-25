@@ -277,9 +277,9 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
             return
         if route == "/api/rasa/reset":
             # Append Rasa's restart event; do not expose the unsafe tracker-replace API.
-            self._proxy_rasa(uid, "POST", f"/conversations/{conversation}/tracker/events", {
+            self._proxy_rasa(uid, "POST", f"/conversations/{conversation}/tracker/events", [{
                 "event": "restart",
-            })
+            }])
             return
         if route == "/api/rasa/trigger-intent":
             name = body.get("name")
@@ -307,12 +307,12 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
             if not isinstance(text, str) or not text.strip() or len(text) > MAX_MESSAGE_CHARS:
                 self._send_json(400, {"error": "valid_text_required"})
                 return
-            self._proxy_rasa(uid, "POST", f"/conversations/{conversation}/tracker/events", {
+            self._proxy_rasa(uid, "POST", f"/conversations/{conversation}/tracker/events", [{
                 "event": "user",
                 "text": text.strip(),
                 "input_channel": "rest",
                 "metadata": {},
-            })
+            }])
             return
 
         self._send_json(404, {"error": "not_found"})
