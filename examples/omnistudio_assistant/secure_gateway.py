@@ -122,7 +122,7 @@ def _validate_tracker_event(event: Any) -> str | None:
 
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_SEARCH_MODEL = os.environ.get("GEMINI_SEARCH_MODEL", "gemini-flash-latest").strip()
+GEMINI_SEARCH_MODEL = os.environ.get("GEMINI_SEARCH_MODEL", "gemini-2.5-flash").strip()
 GEMINI_SEARCH_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 SEARCH_PREFIX_RE = re.compile(
     r"^\s*(?:sara[,:]\s*)?(?:/buscar|/search|"
@@ -131,7 +131,9 @@ SEARCH_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 SEARCH_REQUESTS_PER_MINUTE = 6
+SEARCH_REQUESTS_PER_DAY = 400  # stay below Gemini 2.5 Flash's 500/day free grounding allowance
 _search_call_times: dict[str, list[float]] = {}
+_search_global_times: list[float] = []
 _search_rate_lock = threading.Lock()
 
 
@@ -146,12 +148,16 @@ def _extract_web_search_query(message: str) -> str | None:
 def _allow_web_search(uid: str) -> bool:
     now = time.time()
     with _search_rate_lock:
+        _search_global_times[:] = [t for t in _search_global_times if now - t < 86400]
+        if len(_search_global_times) >= SEARCH_REQUESTS_PER_DAY:
+            return False
         recent = [t for t in _search_call_times.get(uid, []) if now - t < 60]
         if len(recent) >= SEARCH_REQUESTS_PER_MINUTE:
             _search_call_times[uid] = recent
             return False
         recent.append(now)
         _search_call_times[uid] = recent
+        _search_global_times.append(now)
         return True
 
 
@@ -474,7 +480,7 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
                     self._send_json(200, [{"recipient_id": uid, "text": "La búsqueda web todavía no está configurada en Sara."}])
                     return
                 if not _allow_web_search(uid):
-                    self._send_json(200, [{"recipient_id": uid, "text": "Llegaste al límite temporal de búsquedas. Prueba de nuevo en un minuto."}])
+                    self._send_json(200, [{"recipient_id": uid, "text": "Llegaste al límite de búsquedas disponible por ahora. Inténtalo más tarde."}])
                     return
                 try:
                     result = _google_grounded_search(search_query)
