@@ -1,0 +1,70 @@
+version: "3.1"
+nlu:
+  - intent: greet
+    examples: |
+      - hola
+      - buenas
+      - buenos días
+      - buenas tardes
+      - buenas noches
+      - hey Sara
+      - hola Sara
+      - qué tal
+      - cómo estás
+  - intent: goodbye
+    examples: |
+      - adiós
+      - hasta luego
+      - nos vemos
+      - hablamos después
+      - chao
+  - intent: thank_you
+    examples: |
+      - gracias
+      - muchas gracias
+      - pura vida
+      - te agradezco
+      - gracias Sara
+  - intent: affirm
+    examples: |
+      - sí
+      - claro
+      - correcto
+      - de acuerdo
+      - exacto
+  - intent: deny
+    examples: |
+      - no
+      - no gracias
+      - para nada
+      - eso no
+      - mejor no
+  - intent: bot_challenge
+    examples: |
+      - quién eres
+      - eres una persona
+      - eres un bot
+      - cómo te llamas
+      - qué eres
+  - intent: ask_capabilities
+    examples: |
+      - qué puedes hacer
+      - para qué sirves
+      - cuáles son tus funciones
+      - en qué me ayudas
+      - puedes ayudarme
+      - qué sabe hacer Sara
+  - intent: mood_great
+    examples: |
+      - estoy muy bien
+      - me siento genial
+      - todo va excelente
+      - estoy feliz
+      - súper bien
+  - intent: mood_unhappy
+    examples: |
+      - estoy triste
+      - me siento mal
+      - tuve un día difícil
+      - estoy preocupado
+      - no me siento bien
