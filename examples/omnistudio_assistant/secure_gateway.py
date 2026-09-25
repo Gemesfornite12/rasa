@@ -58,8 +58,12 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not_found"})
             return
         rasa = getattr(self.server, "rasa_process", None)
+        ready = getattr(self.server, "rasa_ready", None)
         if rasa is None or rasa.poll() is not None:
             self._send_json(503, {"status": "rasa_stopped"})
+            return
+        if ready is None or not ready.is_set():
+            self._send_json(503, {"status": "rasa_starting"})
             return
         self._send_json(200, {"status": "ok", "service": "sara-gateway"})
 
@@ -121,6 +125,15 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
             self._send_json(413, {"error": "message_too_long"})
             return
 
+        # Keep the public port available while Rasa loads its model. A first
+        # request may wait for the model rather than failing during cold start.
+        ready = getattr(self.server, "rasa_ready", None)
+        if ready is None or not ready.wait(timeout=210):
+            rasa = getattr(self.server, "rasa_process", None)
+            error = "sara_stopped" if rasa is None or rasa.poll() is not None else "sara_starting"
+            self._send_json(503, {"error": error})
+            return
+
         # Never trust a client-provided sender: the verified Firebase UID owns
         # this Rasa tracker, providing tracker isolation per signed-in account.
         upstream_body = _json_bytes({"sender": uid, "message": message})
@@ -170,25 +183,29 @@ def main() -> None:
     ]
     rasa_process = subprocess.Popen(rasa_command, cwd="/app")
 
-    # Do not advertise the public gateway as ready until Rasa has bound its
-    # internal port. HTTPError still proves that an HTTP server is listening.
-    deadline = time.monotonic() + 120
-    while time.monotonic() < deadline:
-        if rasa_process.poll() is not None:
-            raise RuntimeError("Rasa exited before becoming ready")
-        try:
-            with urllib.request.urlopen(RASA_ROOT_URL, timeout=2):
-                break
-        except urllib.error.HTTPError:
-            break
-        except (urllib.error.URLError, TimeoutError, OSError):
-            time.sleep(1)
-    else:
-        rasa_process.terminate()
-        raise RuntimeError("Rasa did not become ready within 120 seconds")
-
+    # Bind Render's public port immediately so the platform can detect it even
+    # while Rasa takes several minutes to load its model.
     server = ThreadingHTTPServer(("0.0.0.0", PUBLIC_PORT), SaraGatewayHandler)
     server.rasa_process = rasa_process  # type: ignore[attr-defined]
+    server.rasa_ready = threading.Event()  # type: ignore[attr-defined]
+
+    def monitor_rasa_readiness() -> None:
+        while rasa_process.poll() is None:
+            try:
+                with urllib.request.urlopen(RASA_ROOT_URL, timeout=2):
+                    server.rasa_ready.set()  # type: ignore[attr-defined]
+                    print("Rasa is ready to receive messages", flush=True)
+                    return
+            except urllib.error.HTTPError:
+                # An HTTP response means Rasa has bound its internal port.
+                server.rasa_ready.set()  # type: ignore[attr-defined]
+                print("Rasa is ready to receive messages", flush=True)
+                return
+            except (urllib.error.URLError, TimeoutError, OSError):
+                time.sleep(1)
+        print("Rasa exited before becoming ready", flush=True)
+
+    threading.Thread(target=monitor_rasa_readiness, daemon=True).start()
 
     def stop_server(signum: int, _frame: Any) -> None:
         threading.Thread(target=server.shutdown, daemon=True).start()
