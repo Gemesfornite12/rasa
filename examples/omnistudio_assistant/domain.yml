@@ -32,7 +32,9 @@ responses:
   utter_mood_unhappy:
     - text: "Lo siento. Si quieres, cuéntame un poco más y te escucho."
   utter_default:
-    - text: "Todavía no sé responder eso. Estoy en una primera versión; puedes probar con un saludo o preguntarme qué puedo hacer."
+    - text: "Todavía no sé responder eso."
+      custom:
+        sara_fallback: true
 
 actions: []
 
