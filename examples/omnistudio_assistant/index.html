@@ -44,14 +44,14 @@
   <main class="app" aria-label="Chat web de Sara">
     <header>
       <div class="avatar" aria-hidden="true">S</div>
-      <div class="brand"><strong>Sara</strong><span>Asistente de OmniStudio · Rasa + Felo</span></div>
+      <div class="brand"><strong>Sara</strong><span>Asistente de OmniStudio · Rasa + Cloudflare</span></div>
       <div class="status" id="connectionStatus">Conectando…</div>
-      <div id="account"><span id="accountEmail"></span><button id="signOutButton" class="smallButton" type="button">Salir</button></div>
+      <div id="account"><span id="accountEmail"></span><button id="clearHistoryButton" class="smallButton" type="button">Borrar historial</button><button id="signOutButton" class="smallButton" type="button">Salir</button></div>
     </header>
 
     <section id="authPanel" aria-labelledby="authTitle">
       <h1 id="authTitle">Inicia sesión</h1>
-      <p>Usa la cuenta de Firebase que ya tienes en OmniStudio. Tus mensajes se envían al gateway de Sara; esta página no los guarda en el navegador.</p>
+      <p>Usa la cuenta de Firebase que ya tienes en OmniStudio. Tus mensajes y respuestas se guardan en tu historial privado de Firebase RTDB, separado por cuenta.</p>
       <button id="googleButton" class="googleButton" type="button"><span class="googleMark" aria-hidden="true">G</span>Continuar con Google</button>
       <form id="emailForm">
         <label for="email">Correo</label>
@@ -79,6 +79,9 @@
       getAuth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
       onAuthStateChanged, signOut, setPersistence, browserSessionPersistence
     } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-auth.js";
+    import {
+      getDatabase, ref, push, get, query, orderByChild, limitToLast, remove
+    } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyCdATx7UVnbN7FiIoyXyvNnplq2hoSt_BQ",
@@ -92,6 +95,8 @@
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
+    const db = getDatabase(app);
+    const HISTORY_LIMIT = 100;
     const persistenceReady = setPersistence(auth, browserSessionPersistence).catch(() => {});
     const provider = new GoogleAuthProvider();
     const authPanel = document.getElementById('authPanel');
@@ -103,6 +108,7 @@
     const sendButton = document.getElementById('sendButton');
     const connectionStatus = document.getElementById('connectionStatus');
     const account = document.getElementById('account');
+    const clearHistoryButton = document.getElementById('clearHistoryButton');
 
     function authErrorText(code) {
       if (code === 'auth/popup-blocked') return 'El navegador bloqueó la ventana. Permite la ventana emergente e inténtalo otra vez.';
@@ -129,17 +135,58 @@
 
     document.getElementById('signOutButton').addEventListener('click', () => signOut(auth));
 
-    function addMessage(text, kind) {
+    function addMessage(text, kind, timestamp = Date.now()) {
       const bubble = document.createElement('div');
       bubble.className = `msg ${kind}`;
       bubble.textContent = text;
       const time = document.createElement('span');
       time.className = 'time';
-      time.textContent = new Date().toLocaleTimeString('es-CR', { hour: '2-digit', minute: '2-digit' });
+      time.textContent = new Date(timestamp).toLocaleTimeString('es-CR', { hour: '2-digit', minute: '2-digit' });
       bubble.appendChild(time);
       messages.appendChild(bubble);
       messages.scrollTop = messages.scrollHeight;
     }
+
+    async function saveHistoryEntry(user, role, text) {
+      await push(ref(db, `sara_chat_history/${user.uid}`), {
+        uid: user.uid,
+        role,
+        text: text.slice(0, 4000),
+        createdAt: Date.now()
+      });
+    }
+
+    async function loadHistory(user) {
+      const historyQuery = query(
+        ref(db, `sara_chat_history/${user.uid}`),
+        orderByChild('createdAt'),
+        limitToLast(HISTORY_LIMIT)
+      );
+      const snapshot = await get(historyQuery);
+      const entries = snapshot.val();
+      if (!entries) return false;
+      const ordered = Object.values(entries)
+        .filter(entry => entry && typeof entry.text === 'string' && Number.isFinite(entry.createdAt))
+        .sort((a, b) => a.createdAt - b.createdAt);
+      ordered.forEach(entry => addMessage(entry.text, entry.role === 'user' ? 'user' : 'bot', entry.createdAt));
+      return ordered.length > 0;
+    }
+
+    clearHistoryButton.addEventListener('click', async () => {
+      const user = auth.currentUser;
+      if (!user || !confirm('¿Borrar todo tu historial de chat con Sara?')) return;
+      clearHistoryButton.disabled = true;
+      try {
+        await remove(ref(db, `sara_chat_history/${user.uid}`));
+        messages.replaceChildren();
+        addMessage('Historial borrado. Puedes empezar una conversación nueva.', 'bot');
+        chatError.textContent = '';
+      } catch {
+        chatError.textContent = 'No se pudo borrar el historial. Inténtalo de nuevo.';
+      } finally {
+        clearHistoryButton.disabled = false;
+      }
+    });
 
     onAuthStateChanged(auth, async user => {
       const loggedIn = Boolean(user);
@@ -149,8 +196,16 @@
       account.style.display = loggedIn ? 'flex' : 'none';
       connectionStatus.textContent = loggedIn ? 'Sesión lista' : 'Acceso protegido';
       document.getElementById('accountEmail').textContent = user?.email || 'Sesión activa';
-      if (loggedIn && messages.childElementCount === 0) {
-        addMessage('Hola, soy Sara. Ya puedes escribirme; responderé mediante Rasa y usaré Felo solo si Rasa activa el fallback.', 'bot');
+      if (loggedIn) {
+        messages.replaceChildren();
+        chatError.textContent = '';
+        try {
+          const loaded = await loadHistory(user);
+          if (!loaded) addMessage('Hola, soy Sara. Ya puedes escribirme; responderé mediante Rasa y usaré Cloudflare solo si Rasa activa el fallback.', 'bot');
+        } catch {
+          addMessage('Hola, soy Sara. Ya puedes escribirme; responderé mediante Rasa y usaré Cloudflare solo si Rasa activa el fallback.', 'bot');
+          chatError.textContent = 'No se pudo cargar el historial. Puedes seguir chateando, pero quizá no se sincronice.';
+        }
       }
       if (!loggedIn) messages.replaceChildren();
     });
@@ -164,6 +219,9 @@
       chatError.textContent = '';
       addMessage(text, 'user');
       sendButton.disabled = true;
+      let historySaveFailed = false;
+      try { await saveHistoryEntry(user, 'user', text); }
+      catch { historySaveFailed = true; }
       try {
         const token = await user.getIdToken();
         const response = await fetch('/webhooks/rest/webhook', {
@@ -179,8 +237,16 @@
         }
         const replies = Array.isArray(data) ? data : [];
         const texts = replies.map(item => item && typeof item.text === 'string' ? item.text.trim() : '').filter(Boolean);
-        if (texts.length) texts.forEach(textReply => addMessage(textReply, 'bot'));
-        else addMessage('Sara no devolvió texto esta vez. Puedes intentar de nuevo.', 'bot');
+        if (texts.length) {
+          for (const textReply of texts) {
+            addMessage(textReply, 'bot');
+            try { await saveHistoryEntry(user, 'assistant', textReply); }
+            catch { historySaveFailed = true; }
+          }
+        } else {
+          addMessage('Sara no devolvió texto esta vez. Puedes intentar de nuevo.', 'bot');
+        }
+        if (historySaveFailed) chatError.textContent = 'Sara respondió, pero no se pudo guardar todo el historial.';
       } catch (error) {
         chatError.textContent = error.message || 'No se pudo conectar con Sara.';
       } finally {
