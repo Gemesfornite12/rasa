@@ -375,6 +375,17 @@
           if ((sendAsCode || sendWithTools) && response.status === 429) throw new Error('Llegaste al límite temporal de Groq. Inténtalo más tarde.');
           if ((sendAsCode || sendWithTools) && response.status === 503) throw new Error('La función de Groq no está configurada o no está disponible.');
           if (!sendAsCode && !sendWithTools && response.status === 503) throw new Error('Sara todavía está iniciando. Inténtalo en un momento.');
+          if ((sendAsCode || sendWithTools) && response.status === 502) {
+            const groqErrors = {
+              groq_auth_failed: 'Groq rechazó la clave configurada. Revisaré la autenticación sin mostrar el secreto.',
+              groq_provider_error: 'Groq rechazó el modelo o la solicitud. Revisaré la configuración.',
+              groq_unavailable: 'No se pudo conectar con Groq; intenta de nuevo más tarde.',
+              groq_empty_response: 'Groq respondió, pero no devolvió texto.',
+              groq_invalid_response: 'Groq devolvió una respuesta que Sara no pudo leer.',
+              tool_call_limit_reached: 'Sara alcanzó el límite de pasos de herramientas.'
+            };
+            throw new Error(groqErrors[data.error] || 'Groq devolvió un error al procesar la solicitud.');
+          }
           throw new Error((sendAsCode || sendWithTools) ? 'No se pudo procesar la solicitud con Groq.' : 'No se pudo enviar el mensaje. Inténtalo otra vez.');
         }
         const replies = (sendAsCode || sendWithTools) ? [{ text: data.text }] : (Array.isArray(data) ? data : []);
