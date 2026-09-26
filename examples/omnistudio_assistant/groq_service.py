@@ -35,6 +35,17 @@ class GroqServiceError(RuntimeError):
         self.code = code
 
 
+def _safe_provider_field(value: Any) -> str:
+    """Keep provider diagnostics to short machine-readable labels only."""
+    if not isinstance(value, str):
+        return "unknown"
+    safe = "".join(
+        char for char in value
+        if char.isascii() and (char.isalnum() or char in "._-")
+    )[:64]
+    return safe or "unknown"
+
+
 def allow_request(uid: str) -> bool:
     now = time.time()
     with _RATE_LOCK:
@@ -77,6 +88,29 @@ def _request(url: str, payload: bytes, content_type: str, timeout: int = 60) -> 
     try:
         response = urllib.request.urlopen(request, timeout=timeout)
     except urllib.error.HTTPError as exc:
+        # Read only enough to extract safe error labels; never log the response
+        # message, request headers, prompt, image, or API key.
+        provider_type = provider_code = provider_param = "unknown"
+        try:
+            provider_payload = json.loads(exc.read(4096))
+            provider_error = (
+                provider_payload.get("error")
+                if isinstance(provider_payload, dict)
+                else None
+            )
+            if isinstance(provider_error, dict):
+                provider_type = _safe_provider_field(provider_error.get("type"))
+                provider_code = _safe_provider_field(provider_error.get("code"))
+                provider_param = _safe_provider_field(provider_error.get("param"))
+        except Exception:
+            pass
+        endpoint = _safe_provider_field(url.rsplit("/", 1)[-1])
+        print(
+            "[groq] upstream_http_error "
+            f"endpoint={endpoint} status={exc.code} "
+            f"type={provider_type} code={provider_code} param={provider_param}",
+            flush=True,
+        )
         if exc.code == 429:
             raise GroqServiceError("groq_rate_limited") from None
         if exc.code in (401, 403):
