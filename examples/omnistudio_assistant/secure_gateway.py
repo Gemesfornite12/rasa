@@ -333,6 +333,7 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
         elif code in {
             "media_required", "invalid_media", "invalid_image", "unsupported_image_type",
             "unsupported_audio_type", "one_to_three_images_required", "valid_code_question_required",
+            "valid_tools_question_required",
         }:
             status = 400
         else:
@@ -552,7 +553,7 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
         if uid is None:
             return
 
-        media_routes = {"/api/rasa/groq/vision", "/api/rasa/groq/audio", "/api/rasa/groq/code"}
+        media_routes = {"/api/rasa/groq/vision", "/api/rasa/groq/audio", "/api/rasa/groq/code", "/api/rasa/groq/tools"}
         body = self._read_json_body(
             allow_empty=(route in {"/api/rasa/predict", "/api/rasa/reset"}),
             max_bytes=MAX_MEDIA_BODY_BYTES if route in media_routes else MAX_BODY_BYTES,
@@ -590,6 +591,23 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
                 return
             try:
                 text = groq_service.coding_assistant(body.get("text"))
+                self._send_json(200, {"text": text})
+            except groq_service.GroqServiceError as exc:
+                self._send_groq_error(exc)
+            return
+
+        if route == "/api/rasa/groq/tools":
+            if not groq_service.allow_request(uid):
+                self._send_json(429, {"error": "groq_rate_limited"})
+                return
+
+            def groq_tool_search(query: str) -> dict[str, Any]:
+                if not _allow_web_search(uid):
+                    raise RuntimeError("search_rate_limited")
+                return _duckduckgo_web_search(query)
+
+            try:
+                text = groq_service.tool_assisted_reply(body.get("text"), groq_tool_search)
                 self._send_json(200, {"text": text})
             except groq_service.GroqServiceError as exc:
                 self._send_groq_error(exc)

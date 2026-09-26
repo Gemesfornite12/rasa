@@ -74,11 +74,12 @@
       <button id="audioButton" class="toolButton" type="button" title="Transcribir o traducir audio" aria-label="Adjuntar audio">🎙️</button>
       <input id="audioInput" type="file" accept="audio/*,.mp3,.wav,.m4a,.webm,.ogg,.flac" hidden>
       <button id="codeButton" class="toolButton" type="button" title="Activar ayuda con código" aria-label="Modo código">&lt;/&gt;</button>
+      <button id="toolsButton" class="toolButton" type="button" title="Usar calculadora o búsqueda web" aria-label="Herramientas seguras">🧰</button>
       <input id="messageInput" maxlength="4000" autocomplete="off" placeholder="Escribe un mensaje…" aria-label="Mensaje">
       <button id="sendButton" type="submit" aria-label="Enviar mensaje">➤</button>
     </form>
     <div id="chatError" role="status"></div>
-    <footer>Imágenes y audios se envían a Groq para analizarlos; solo guardamos texto. La biblioteca de aprendizaje requiere tu confirmación.</footer>
+    <footer>Imágenes y audios se envían a Groq y no se guardan. Herramientas: cálculo y búsqueda web; acciones externas requieren confirmación. Aprendizaje solo con tu permiso.</footer>
   </main>
 
   <script type="module">
@@ -122,7 +123,9 @@
     const audioButton = document.getElementById('audioButton');
     const audioInput = document.getElementById('audioInput');
     const codeButton = document.getElementById('codeButton');
+    const toolsButton = document.getElementById('toolsButton');
     let codeMode = false;
+    let toolMode = false;
 
     function authErrorText(code) {
       if (code === 'auth/popup-blocked') return 'El navegador bloqueó la ventana. Permite la ventana emergente e inténtalo otra vez.';
@@ -243,6 +246,7 @@
       imageButton.disabled = busy;
       audioButton.disabled = busy;
       codeButton.disabled = busy;
+      toolsButton.disabled = busy;
     }
 
     async function sendGroqFeature(path, payload, userText) {
@@ -325,9 +329,22 @@
 
     codeButton.addEventListener('click', () => {
       codeMode = !codeMode;
+      if (codeMode) toolMode = false;
+      codeButton.classList.toggle('active', codeMode);
+      toolsButton.classList.toggle('active', toolMode);
+      codeButton.title = codeMode ? 'Desactivar ayuda con código' : 'Activar ayuda con código';
+      toolsButton.title = toolMode ? 'Desactivar herramientas seguras' : 'Usar calculadora o búsqueda web';
+      messageInput.placeholder = codeMode ? 'Describe el código o el error…' : (toolMode ? 'Pregunta para calcular o buscar…' : 'Escribe un mensaje…');
+    });
+
+    toolsButton.addEventListener('click', () => {
+      toolMode = !toolMode;
+      if (toolMode) codeMode = false;
+      toolsButton.classList.toggle('active', toolMode);
       codeButton.classList.toggle('active', codeMode);
       codeButton.title = codeMode ? 'Desactivar ayuda con código' : 'Activar ayuda con código';
-      messageInput.placeholder = codeMode ? 'Describe el código o el error…' : 'Escribe un mensaje…';
+      toolsButton.title = toolMode ? 'Desactivar herramientas seguras' : 'Usar calculadora o búsqueda web';
+      messageInput.placeholder = toolMode ? 'Pregunta para calcular o buscar…' : (codeMode ? 'Describe el código o el error…' : 'Escribe un mensaje…');
     });
 
     composer.addEventListener('submit', async event => {
@@ -338,6 +355,7 @@
       messageInput.value = '';
       chatError.textContent = '';
       const sendAsCode = codeMode;
+      const sendWithTools = toolMode;
       addMessage(text, 'user');
       setFeatureBusy(true);
       let historySaveFailed = false;
@@ -345,20 +363,21 @@
       catch { historySaveFailed = true; }
       try {
         const token = await user.getIdToken();
-        const response = await fetch(sendAsCode ? '/api/rasa/groq/code' : '/webhooks/rest/webhook', {
+        const featurePath = sendAsCode ? '/api/rasa/groq/code' : (sendWithTools ? '/api/rasa/groq/tools' : '/webhooks/rest/webhook');
+        const response = await fetch(featurePath, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify(sendAsCode ? { text } : { message: text })
+          body: JSON.stringify((sendAsCode || sendWithTools) ? { text } : { message: text })
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
           if (response.status === 401) throw new Error('La sesión venció. Sal y vuelve a iniciar sesión.');
-          if (sendAsCode && response.status === 429) throw new Error('Llegaste al límite temporal de Groq. Inténtalo más tarde.');
-          if (sendAsCode && response.status === 503) throw new Error('La función de Groq no está configurada o no está disponible.');
-          if (!sendAsCode && response.status === 503) throw new Error('Sara todavía está iniciando. Inténtalo en un momento.');
-          throw new Error(sendAsCode ? 'No se pudo procesar la solicitud con Groq.' : 'No se pudo enviar el mensaje. Inténtalo otra vez.');
+          if ((sendAsCode || sendWithTools) && response.status === 429) throw new Error('Llegaste al límite temporal de Groq. Inténtalo más tarde.');
+          if ((sendAsCode || sendWithTools) && response.status === 503) throw new Error('La función de Groq no está configurada o no está disponible.');
+          if (!sendAsCode && !sendWithTools && response.status === 503) throw new Error('Sara todavía está iniciando. Inténtalo en un momento.');
+          throw new Error((sendAsCode || sendWithTools) ? 'No se pudo procesar la solicitud con Groq.' : 'No se pudo enviar el mensaje. Inténtalo otra vez.');
         }
-        const replies = sendAsCode ? [{ text: data.text }] : (Array.isArray(data) ? data : []);
+        const replies = (sendAsCode || sendWithTools) ? [{ text: data.text }] : (Array.isArray(data) ? data : []);
         const texts = replies.map(item => item && typeof item.text === 'string' ? item.text.trim() : '').filter(Boolean);
         if (texts.length) {
           for (const textReply of texts) {
