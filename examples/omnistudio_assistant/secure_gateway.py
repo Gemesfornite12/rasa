@@ -991,7 +991,7 @@ def _allow_felo_fallback(uid: str) -> bool:
 
 def _sara_felo_fallback_reply(uid: str, rasa_body: Any, rasa_response: bytes) -> str | None:
     """Call Felo only when Rasa explicitly flags its reply for Sara fallback."""
-    if not FELO_API_KEY or not isinstance(rasa_body, dict):
+    if not isinstance(rasa_body, dict):
         return None
     message = rasa_body.get("message")
     if not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE_CHARS:
@@ -999,13 +999,17 @@ def _sara_felo_fallback_reply(uid: str, rasa_body: Any, rasa_response: bytes) ->
     try:
         replies = json.loads(rasa_response)
     except (json.JSONDecodeError, UnicodeDecodeError):
+        print("sara-fallback:invalid-rasa-json")
         return None
     if not isinstance(replies, list):
+        print("sara-fallback:unexpected-rasa-shape")
         return None
     fallback_marked = False
+    default_reply_seen = False
     for item in replies:
         if not isinstance(item, dict):
             continue
+        default_reply_seen = default_reply_seen or item.get("text") == "Todavía no sé responder eso."
         custom = item.get("custom")
         if not isinstance(custom, dict):
             continue
@@ -1013,7 +1017,15 @@ def _sara_felo_fallback_reply(uid: str, rasa_body: Any, rasa_response: bytes) ->
         if flag is True or (isinstance(flag, str) and flag.strip().lower() == "true"):
             fallback_marked = True
             break
-    if not fallback_marked or not _allow_felo_fallback(uid):
+    if not fallback_marked:
+        if default_reply_seen:
+            print("sara-fallback:default-reply-without-marker")
+        return None
+    if not FELO_API_KEY:
+        print("sara-fallback:missing-api-key")
+        return None
+    if not _allow_felo_fallback(uid):
+        print("sara-fallback:local-rate-limit")
         return None
     prompt = (
         "Eres Sara, asistente de OmniStudio. Responde en el mismo idioma del mensaje del usuario, "
@@ -1033,9 +1045,17 @@ def _sara_felo_fallback_reply(uid: str, rasa_body: Any, rasa_response: bytes) ->
             "temperature": 0.2,
         })
         text = _llm_text(result).strip()
-        return text[:4000] if text else None
-    except (FeloRequestError, ValueError, TypeError, KeyError, OSError, TimeoutError):
-        # Keep Rasa's original fallback reply if the provider fails.
+        if not text:
+            print("sara-fallback:empty-felo-response")
+            return None
+        print("sara-fallback:felo-response-ok")
+        return text[:4000]
+    except FeloRequestError as exc:
+        # Log only the provider's fixed error code; never log prompts or secrets.
+        print(f"sara-fallback:felo-error={exc.code}")
+        return None
+    except (ValueError, TypeError, KeyError, OSError, TimeoutError):
+        print("sara-fallback:felo-error=unexpected")
         return None
 
 
