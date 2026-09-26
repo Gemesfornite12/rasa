@@ -123,6 +123,11 @@ def _validate_tracker_event(event: Any) -> str | None:
 
 
 FELO_API_KEY = os.environ.get("FELO_API_KEY", "").strip()
+SARA_LLM_PROVIDER = os.environ.get("SARA_LLM_PROVIDER", "felo").strip().lower()
+CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
+CLOUDFLARE_AI_MODEL = os.environ.get("CLOUDFLARE_AI_MODEL", "@cf/meta/llama-3.1-8b-instruct-fp8-fast").strip()
+CLOUDFLARE_AI_API_ROOT = "https://api.cloudflare.com/client/v4"
 FELO_CHAT_URL = "https://openapi.felo.ai/v2/chat"
 SEARCH_PREFIX_RE = re.compile(
     r"^\s*(?:sara[,:]\s*)?(?:/buscar|/search|"
@@ -1001,8 +1006,60 @@ def _allow_felo_fallback(uid: str) -> bool:
         return True
 
 
+def _cloudflare_ai_reply(messages: list[dict[str, str]]) -> str:
+    if not CLOUDFLARE_API_TOKEN or not CLOUDFLARE_ACCOUNT_ID:
+        raise FeloRequestError("cloudflare_not_configured", 503)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{10,80}", CLOUDFLARE_ACCOUNT_ID):
+        raise FeloRequestError("cloudflare_invalid_account", 503)
+    if not re.fullmatch(r"@cf/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", CLOUDFLARE_AI_MODEL):
+        raise FeloRequestError("cloudflare_invalid_model", 503)
+    url = (
+        f"{CLOUDFLARE_AI_API_ROOT}/accounts/{CLOUDFLARE_ACCOUNT_ID}"
+        f"/ai/run/{CLOUDFLARE_AI_MODEL}"
+    )
+    body = {"messages": messages, "max_tokens": 1000, "temperature": 0.2}
+    req = urllib.request.Request(
+        url,
+        data=_json_bytes(body),
+        headers={
+            "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        response = urllib.request.urlopen(req, timeout=60)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            raise FeloRequestError("cloudflare_rate_limited", 429, provider_status=exc.code) from None
+        if exc.code in (401, 403):
+            raise FeloRequestError("cloudflare_auth_failed", 502, provider_status=exc.code) from None
+        raise FeloRequestError("cloudflare_provider_error", 502, provider_status=exc.code) from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise FeloRequestError("cloudflare_unavailable", 502) from None
+    with response:
+        raw = response.read(MAX_UPSTREAM_BYTES + 1)
+        content_type = response.headers.get("Content-Type", "application/json")
+    if len(raw) > MAX_UPSTREAM_BYTES:
+        raise FeloRequestError("cloudflare_response_too_large", 502)
+    if "json" not in content_type.lower():
+        raise FeloRequestError("cloudflare_invalid_response", 502)
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise FeloRequestError("cloudflare_invalid_response", 502) from None
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        raise FeloRequestError("cloudflare_provider_error", 502)
+    result = payload.get("result")
+    text = result.get("response") if isinstance(result, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        raise FeloRequestError("cloudflare_empty_response", 502)
+    return text.strip()[:12000]
+
+
 def _sara_felo_fallback_reply(uid: str, rasa_body: Any, rasa_response: bytes) -> str | None:
-    """Call Felo only when Rasa explicitly flags its reply for Sara fallback."""
+    """Call the configured LLM only when Rasa explicitly flags its reply for fallback."""
     if not isinstance(rasa_body, dict):
         return None
     message = rasa_body.get("message")
@@ -1033,8 +1090,17 @@ def _sara_felo_fallback_reply(uid: str, rasa_body: Any, rasa_response: bytes) ->
         if default_reply_seen:
             print("sara-fallback:default-reply-without-marker")
         return None
-    if not FELO_API_KEY:
-        print("sara-fallback:missing-api-key")
+    provider = SARA_LLM_PROVIDER
+    if provider == "cloudflare":
+        if not CLOUDFLARE_API_TOKEN or not CLOUDFLARE_ACCOUNT_ID:
+            print("sara-fallback:cloudflare-not-configured")
+            return None
+    elif provider == "felo":
+        if not FELO_API_KEY:
+            print("sara-fallback:felo-missing-api-key")
+            return None
+    else:
+        print("sara-fallback:unsupported-provider")
         return None
     if not _allow_felo_fallback(uid):
         print("sara-fallback:local-rate-limit")
@@ -1047,25 +1113,29 @@ def _sara_felo_fallback_reply(uid: str, rasa_body: Any, rasa_response: bytes) ->
         "sin inventar. No uses ni solicites herramientas."
     )
     try:
-        result = _felo_llm("chat/completions", {
-            "model": FELO_LLM_DEFAULT_MODEL,
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": message.strip()},
-            ],
-            "max_tokens": 1000,
-            "temperature": 0.2,
-        })
-        text = _llm_text(result).strip()
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": message.strip()},
+        ]
+        if provider == "cloudflare":
+            text = _cloudflare_ai_reply(messages).strip()
+        else:
+            result = _felo_llm("chat/completions", {
+                "model": FELO_LLM_DEFAULT_MODEL,
+                "messages": messages,
+                "max_tokens": 1000,
+                "temperature": 0.2,
+            })
+            text = _llm_text(result).strip()
         if not text:
-            print("sara-fallback:empty-felo-response")
+            print(f"sara-fallback:empty-{provider}-response")
             return None
-        print("sara-fallback:felo-response-ok")
+        print(f"sara-fallback:{provider}-response-ok")
         return text[:4000]
     except FeloRequestError as exc:
-        # Log only the provider's fixed error code; never log prompts or secrets.
+        # Log fixed provider status only; never log prompts, response bodies, or secrets.
         status = exc.provider_status or 0
-        print(f"sara-fallback:felo-error={exc.code}:provider_status={status}")
+        print(f"sara-fallback:{provider}-error={exc.code}:provider_status={status}")
         return None
     except (ValueError, TypeError, KeyError, OSError, TimeoutError):
         print("sara-fallback:felo-error=unexpected")
