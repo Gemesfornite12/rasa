@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0b1120">
   <link rel="icon" href="data:,">
-  <title>Sara · OmniStudio</title>
+  <title>Asistente de OmniStudio</title>
   <style>
     :root { color-scheme: dark; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     * { box-sizing: border-box; }
@@ -32,19 +32,22 @@
     .bot { align-self: flex-start; background: #202b42; border-bottom-left-radius: 5px; }
     .user { align-self: flex-end; background: #5557d9; border-bottom-right-radius: 5px; }
     .time { display: block; margin-top: 6px; opacity: .62; font-size: 10px; text-align: right; }
-    #composer { display: none; gap: 10px; padding: 12px; border-top: 1px solid #26324b; background: #121c31; }
+    #composer { display: none; align-items: center; gap: 8px; padding: 12px; border-top: 1px solid #26324b; background: #121c31; }
     #messageInput { flex: 1; min-width: 0; }
+    .toolButton { flex: 0 0 auto; width: 42px; height: 42px; border: 1px solid #475569; border-radius: 12px; background: #17243a; color: #e2e8f0; font-size: 18px; cursor: pointer; }
+    .toolButton.active { border-color: #a5b4fc; background: #393c85; color: white; }
+    .toolButton:disabled { opacity: .55; cursor: wait; }
     #sendButton { width: 48px; border: 0; border-radius: 12px; background: #6366f1; color: white; font-size: 20px; cursor: pointer; }
     #sendButton:disabled { opacity: .55; cursor: wait; }
     footer { padding: 0 16px 12px; background: #121c31; text-align: center; color: #8492aa; font-size: 10px; }
-    @media (max-width: 520px) { body { padding: 0; } .app { width: 100%; height: 100dvh; min-height: 0; border-radius: 0; border: 0; } header { padding: 13px; } #accountEmail { max-width: 105px; } #messages { padding: 16px 12px; } }
+    @media (max-width: 520px) { body { padding: 0; } .app { width: 100%; height: 100dvh; min-height: 0; border-radius: 0; border: 0; } header { padding: 13px; } #accountEmail { max-width: 105px; } #messages { padding: 16px 12px; } #composer { gap: 6px; padding: 8px; } .toolButton { width: 38px; height: 40px; } #sendButton { width: 42px; } }
   </style>
 </head>
 <body>
   <main class="app" aria-label="Chat web de Sara">
     <header>
       <div class="avatar" aria-hidden="true">S</div>
-      <div class="brand"><strong>Sara</strong><span>Asistente de OmniStudio · Rasa + Cloudflare</span></div>
+      <div class="brand"><strong>Sara</strong><span>Asistente de OmniStudio · Rasa + Cloudflare + Groq AI + DuckDuckGo Search</span></div>
       <div class="status" id="connectionStatus">Conectando…</div>
       <div id="account"><span id="accountEmail"></span><button id="clearHistoryButton" class="smallButton" type="button">Borrar historial</button><button id="signOutButton" class="smallButton" type="button">Salir</button></div>
     </header>
@@ -66,11 +69,16 @@
 
     <section id="messages" aria-live="polite"></section>
     <form id="composer">
+      <button id="imageButton" class="toolButton" type="button" title="Analizar imagen" aria-label="Adjuntar imagen">🖼️</button>
+      <input id="imageInput" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden>
+      <button id="audioButton" class="toolButton" type="button" title="Transcribir o traducir audio" aria-label="Adjuntar audio">🎙️</button>
+      <input id="audioInput" type="file" accept="audio/*,.mp3,.wav,.m4a,.webm,.ogg,.flac" hidden>
+      <button id="codeButton" class="toolButton" type="button" title="Activar ayuda con código" aria-label="Modo código">&lt;/&gt;</button>
       <input id="messageInput" maxlength="4000" autocomplete="off" placeholder="Escribe un mensaje…" aria-label="Mensaje">
       <button id="sendButton" type="submit" aria-label="Enviar mensaje">➤</button>
     </form>
     <div id="chatError" role="status"></div>
-    <footer>La biblioteca de aprendizaje solo guarda notas después de tu confirmación.</footer>
+    <footer>Imágenes y audios se envían a Groq para analizarlos; solo guardamos texto. La biblioteca de aprendizaje requiere tu confirmación.</footer>
   </main>
 
   <script type="module">
@@ -109,6 +117,12 @@
     const connectionStatus = document.getElementById('connectionStatus');
     const account = document.getElementById('account');
     const clearHistoryButton = document.getElementById('clearHistoryButton');
+    const imageButton = document.getElementById('imageButton');
+    const imageInput = document.getElementById('imageInput');
+    const audioButton = document.getElementById('audioButton');
+    const audioInput = document.getElementById('audioInput');
+    const codeButton = document.getElementById('codeButton');
+    let codeMode = false;
 
     function authErrorText(code) {
       if (code === 'auth/popup-blocked') return 'El navegador bloqueó la ventana. Permite la ventana emergente e inténtalo otra vez.';
@@ -201,13 +215,119 @@
         chatError.textContent = '';
         try {
           const loaded = await loadHistory(user);
-          if (!loaded) addMessage('Hola, soy Sara. Ya puedes escribirme; responderé mediante Rasa y usaré Cloudflare solo si Rasa activa el fallback.', 'bot');
+          if (!loaded) addMessage('Hola, soy Sara. Rasa responde primero; Cloudflare atiende el fallback. Puedes adjuntar imágenes o audios y activar ayuda con código.', 'bot');
         } catch {
-          addMessage('Hola, soy Sara. Ya puedes escribirme; responderé mediante Rasa y usaré Cloudflare solo si Rasa activa el fallback.', 'bot');
+          addMessage('Hola, soy Sara. Rasa responde primero; Cloudflare atiende el fallback. Puedes adjuntar imágenes o audios y activar ayuda con código.', 'bot');
           chatError.textContent = 'No se pudo cargar el historial. Puedes seguir chateando, pero quizá no se sincronice.';
         }
       }
       if (!loggedIn) messages.replaceChildren();
+    });
+
+    function readFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = String(reader.result || '');
+          const comma = dataUrl.indexOf(',');
+          if (comma < 0) reject(new Error('No se pudo leer el archivo.'));
+          else resolve(dataUrl.slice(comma + 1));
+        };
+        reader.onerror = () => reject(new Error('No se pudo leer el archivo.'));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function setFeatureBusy(busy) {
+      sendButton.disabled = busy;
+      imageButton.disabled = busy;
+      audioButton.disabled = busy;
+      codeButton.disabled = busy;
+    }
+
+    async function sendGroqFeature(path, payload, userText) {
+      const user = auth.currentUser;
+      if (!user || sendButton.disabled) return;
+      chatError.textContent = '';
+      addMessage(userText, 'user');
+      setFeatureBusy(true);
+      let historySaveFailed = false;
+      try { await saveHistoryEntry(user, 'user', userText); } catch { historySaveFailed = true; }
+      try {
+        const token = await user.getIdToken();
+        const response = await fetch(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify(payload)
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (response.status === 401) throw new Error('La sesión venció. Sal y vuelve a iniciar sesión.');
+          if (response.status === 413) throw new Error('El archivo supera el tamaño permitido.');
+          if (response.status === 429) throw new Error('Llegaste al límite temporal de solicitudes. Inténtalo más tarde.');
+          if (response.status === 503) throw new Error('La función de Groq no está disponible.');
+          throw new Error('No se pudo procesar el archivo o la solicitud con Groq.');
+        }
+        if (typeof data.text !== 'string' || !data.text.trim()) throw new Error('Groq no devolvió texto esta vez.');
+        addMessage(data.text.trim(), 'bot');
+        try { await saveHistoryEntry(user, 'assistant', data.text.trim()); } catch { historySaveFailed = true; }
+        if (historySaveFailed) chatError.textContent = 'La respuesta llegó, pero no se pudo guardar todo el historial.';
+      } catch (error) {
+        chatError.textContent = error.message || 'No se pudo conectar con Groq.';
+      } finally {
+        setFeatureBusy(false);
+        messageInput.focus();
+      }
+    }
+
+    imageButton.addEventListener('click', () => imageInput.click());
+    imageInput.addEventListener('change', async () => {
+      const files = Array.from(imageInput.files || []);
+      imageInput.value = '';
+      if (!files.length) return;
+      if (files.length > 3 || files.some(file => !['image/jpeg', 'image/png', 'image/webp'].includes(file.type))) {
+        chatError.textContent = 'Adjunta de 1 a 3 imágenes JPG, PNG o WebP.';
+        return;
+      }
+      if (files.some(file => file.size > 3 * 1024 * 1024) || files.reduce((sum, file) => sum + file.size, 0) > 6 * 1024 * 1024) {
+        chatError.textContent = 'Cada imagen puede pesar hasta 3 MB; el total, hasta 6 MB.';
+        return;
+      }
+      const prompt = messageInput.value.trim() || 'Describe la imagen y extrae el texto visible con claridad.';
+      messageInput.value = '';
+      try {
+        const images = await Promise.all(files.map(async file => ({
+          data: await readFileAsBase64(file), mimeType: file.type, name: file.name
+        })));
+        await sendGroqFeature('/api/rasa/groq/vision', { prompt, images }, `🖼️ ${files.map(file => file.name).join(', ')}\nSolicitud: ${prompt}`);
+      } catch (error) { chatError.textContent = error.message || 'No se pudo leer la imagen.'; }
+    });
+
+    audioButton.addEventListener('click', () => audioInput.click());
+    audioInput.addEventListener('change', async () => {
+      const file = audioInput.files && audioInput.files[0];
+      audioInput.value = '';
+      if (!file) return;
+      if (file.size > 6 * 1024 * 1024) {
+        chatError.textContent = 'El audio puede pesar hasta 6 MB.';
+        return;
+      }
+      const translate = window.confirm('¿Quieres transcribir y traducir el audio al español? Acepta para traducir; cancela para transcribirlo en su idioma.');
+      const mode = translate ? 'translate_es' : 'transcribe';
+      const userText = `🎙️ ${file.name} · ${translate ? 'traducir al español' : 'transcribir'}`;
+      try {
+        const audioData = await readFileAsBase64(file);
+        await sendGroqFeature('/api/rasa/groq/audio', {
+          audioData, mimeType: file.type, fileName: file.name, mode
+        }, userText);
+      } catch (error) { chatError.textContent = error.message || 'No se pudo leer el audio.'; }
+    });
+
+    codeButton.addEventListener('click', () => {
+      codeMode = !codeMode;
+      codeButton.classList.toggle('active', codeMode);
+      codeButton.title = codeMode ? 'Desactivar ayuda con código' : 'Activar ayuda con código';
+      messageInput.placeholder = codeMode ? 'Describe el código o el error…' : 'Escribe un mensaje…';
     });
 
     composer.addEventListener('submit', async event => {
@@ -217,25 +337,28 @@
       if (!text || !user || sendButton.disabled) return;
       messageInput.value = '';
       chatError.textContent = '';
+      const sendAsCode = codeMode;
       addMessage(text, 'user');
-      sendButton.disabled = true;
+      setFeatureBusy(true);
       let historySaveFailed = false;
       try { await saveHistoryEntry(user, 'user', text); }
       catch { historySaveFailed = true; }
       try {
         const token = await user.getIdToken();
-        const response = await fetch('/webhooks/rest/webhook', {
+        const response = await fetch(sendAsCode ? '/api/rasa/groq/code' : '/webhooks/rest/webhook', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ message: text })
+          body: JSON.stringify(sendAsCode ? { text } : { message: text })
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
           if (response.status === 401) throw new Error('La sesión venció. Sal y vuelve a iniciar sesión.');
-          if (response.status === 503) throw new Error('Sara todavía está iniciando. Inténtalo en un momento.');
-          throw new Error('No se pudo enviar el mensaje. Inténtalo otra vez.');
+          if (sendAsCode && response.status === 429) throw new Error('Llegaste al límite temporal de Groq. Inténtalo más tarde.');
+          if (sendAsCode && response.status === 503) throw new Error('La función de Groq no está configurada o no está disponible.');
+          if (!sendAsCode && response.status === 503) throw new Error('Sara todavía está iniciando. Inténtalo en un momento.');
+          throw new Error(sendAsCode ? 'No se pudo procesar la solicitud con Groq.' : 'No se pudo enviar el mensaje. Inténtalo otra vez.');
         }
-        const replies = Array.isArray(data) ? data : [];
+        const replies = sendAsCode ? [{ text: data.text }] : (Array.isArray(data) ? data : []);
         const texts = replies.map(item => item && typeof item.text === 'string' ? item.text.trim() : '').filter(Boolean);
         if (texts.length) {
           for (const textReply of texts) {
@@ -250,7 +373,7 @@
       } catch (error) {
         chatError.textContent = error.message || 'No se pudo conectar con Sara.';
       } finally {
-        sendButton.disabled = false;
+        setFeatureBusy(false);
         messageInput.focus();
       }
     });

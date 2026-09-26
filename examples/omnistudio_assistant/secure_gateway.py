@@ -20,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import felo_livedocs
+import groq_service
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -34,6 +35,7 @@ RASA_PORT = 10001
 RASA_URL = f"http://{RASA_HOST}:{RASA_PORT}/webhooks/rest/webhook"
 RASA_ROOT_URL = f"http://{RASA_HOST}:{RASA_PORT}/"
 MAX_BODY_BYTES = 16 * 1024
+MAX_MEDIA_BODY_BYTES = 12 * 1024 * 1024
 MAX_MESSAGE_CHARS = 4000
 MAX_UPSTREAM_BYTES = 512 * 1024
 
@@ -320,6 +322,23 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_groq_error(self, error: groq_service.GroqServiceError) -> None:
+        code = error.code
+        if code in {"groq_rate_limited"}:
+            status = 429
+        elif code == "media_too_large":
+            status = 413
+        elif code == "groq_not_configured":
+            status = 503
+        elif code in {
+            "media_required", "invalid_media", "invalid_image", "unsupported_image_type",
+            "unsupported_audio_type", "one_to_three_images_required", "valid_code_question_required",
+        }:
+            status = 400
+        else:
+            status = 502
+        self._send_json(status, {"error": code})
+
     def _send_sara_web_app(self) -> None:
         try:
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"), "rb") as app_file:
@@ -354,7 +373,7 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
             return None
         return uid
 
-    def _read_json_body(self, *, allow_empty: bool = False) -> dict[str, Any] | None:
+    def _read_json_body(self, *, allow_empty: bool = False, max_bytes: int = MAX_BODY_BYTES) -> dict[str, Any] | None:
         content_length = self.headers.get("Content-Length")
         try:
             length = int(content_length or "0")
@@ -366,7 +385,7 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
         if length <= 0:
             self._send_json(400, {"error": "empty_request"})
             return None
-        if length > MAX_BODY_BYTES:
+        if length > max_bytes:
             self._send_json(413, {"error": "request_too_large"})
             return None
         if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
@@ -533,8 +552,47 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
         if uid is None:
             return
 
-        body = self._read_json_body(allow_empty=(route in {"/api/rasa/predict", "/api/rasa/reset"}))
+        media_routes = {"/api/rasa/groq/vision", "/api/rasa/groq/audio", "/api/rasa/groq/code"}
+        body = self._read_json_body(
+            allow_empty=(route in {"/api/rasa/predict", "/api/rasa/reset"}),
+            max_bytes=MAX_MEDIA_BODY_BYTES if route in media_routes else MAX_BODY_BYTES,
+        )
         if body is None:
+            return
+
+        if route == "/api/rasa/groq/vision":
+            if not groq_service.allow_request(uid):
+                self._send_json(429, {"error": "groq_rate_limited"})
+                return
+            try:
+                text = groq_service.analyze_images(body.get("prompt", ""), body.get("images"))
+                self._send_json(200, {"text": text})
+            except groq_service.GroqServiceError as exc:
+                self._send_groq_error(exc)
+            return
+
+        if route == "/api/rasa/groq/audio":
+            if not groq_service.allow_request(uid):
+                self._send_json(429, {"error": "groq_rate_limited"})
+                return
+            try:
+                text = groq_service.transcribe_audio(
+                    body.get("audioData"), body.get("mimeType"), body.get("fileName"), body.get("mode")
+                )
+                self._send_json(200, {"text": text})
+            except groq_service.GroqServiceError as exc:
+                self._send_groq_error(exc)
+            return
+
+        if route == "/api/rasa/groq/code":
+            if not groq_service.allow_request(uid):
+                self._send_json(429, {"error": "groq_rate_limited"})
+                return
+            try:
+                text = groq_service.coding_assistant(body.get("text"))
+                self._send_json(200, {"text": text})
+            except groq_service.GroqServiceError as exc:
+                self._send_groq_error(exc)
             return
 
         if route == "/api/rasa/search":
