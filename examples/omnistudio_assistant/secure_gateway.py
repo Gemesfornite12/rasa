@@ -856,11 +856,18 @@ _FELO_FALLBACK_LOCK = threading.Lock()
 
 
 class FeloRequestError(RuntimeError):
-    def __init__(self, code: str, http_status: int = 502, retry_after: str | None = None):
+    def __init__(
+        self,
+        code: str,
+        http_status: int = 502,
+        retry_after: str | None = None,
+        provider_status: int | None = None,
+    ):
         super().__init__(code)
         self.code = code
         self.http_status = http_status
         self.retry_after = retry_after
+        self.provider_status = provider_status
 
 
 def _felo_request(method: str, path: str, body: Any = None, *, accept: str = "application/json") -> tuple[dict[str, Any], Any]:
@@ -868,7 +875,12 @@ def _felo_request(method: str, path: str, body: Any = None, *, accept: str = "ap
         raise FeloRequestError("felo_not_configured", 503)
     url = FELO_API_ROOT + path
     data = None if body is None else _json_bytes(body)
-    headers = {"Authorization": f"Bearer {FELO_API_KEY}", "Accept": accept}
+    headers = {"Accept": accept}
+    if path.startswith("/api/v1/"):
+        # The LLM API documents X-API-Key as an alternative auth scheme.
+        headers["X-API-Key"] = FELO_API_KEY
+    else:
+        headers["Authorization"] = f"Bearer {FELO_API_KEY}"
     if data is not None:
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -881,7 +893,7 @@ def _felo_request(method: str, path: str, body: Any = None, *, accept: str = "ap
         if exc.code == 402:
             raise FeloRequestError("felo_insufficient_credits", 402) from None
         if exc.code in (401, 403):
-            raise FeloRequestError("felo_auth_failed", 502) from None
+            raise FeloRequestError("felo_auth_failed", 502, provider_status=exc.code) from None
         raise FeloRequestError("felo_provider_error", 502) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise FeloRequestError("felo_unavailable", 502) from None
@@ -1052,7 +1064,8 @@ def _sara_felo_fallback_reply(uid: str, rasa_body: Any, rasa_response: bytes) ->
         return text[:4000]
     except FeloRequestError as exc:
         # Log only the provider's fixed error code; never log prompts or secrets.
-        print(f"sara-fallback:felo-error={exc.code}")
+        status = exc.provider_status or 0
+        print(f"sara-fallback:felo-error={exc.code}:provider_status={status}")
         return None
     except (ValueError, TypeError, KeyError, OSError, TimeoutError):
         print("sara-fallback:felo-error=unexpected")
