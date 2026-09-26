@@ -11,6 +11,15 @@ nlu:
       - hola Sara
       - qué tal
       - cómo estás
+      - hello
+      - hi Sara
+      - good morning
+      - bonjour
+      - salut Sara
+      - bonsoir
+      - olá
+      - oi Sara
+      - bom dia
   - intent: goodbye
     examples: |
       - adiós
@@ -18,6 +27,15 @@ nlu:
       - nos vemos
       - hablamos después
       - chao
+      - goodbye
+      - see you later
+      - talk to you soon
+      - au revoir
+      - à bientôt
+      - à plus tard
+      - tchau
+      - até logo
+      - até mais
   - intent: thank_you
     examples: |
       - gracias
@@ -25,6 +43,15 @@ nlu:
       - pura vida
       - te agradezco
       - gracias Sara
+      - thank you
+      - thanks a lot
+      - thanks Sara
+      - merci
+      - merci beaucoup
+      - je te remercie
+      - obrigado
+      - obrigada
+      - muito obrigado
   - intent: affirm
     examples: |
       - sí
@@ -32,6 +59,15 @@ nlu:
       - correcto
       - de acuerdo
       - exacto
+      - yes
+      - of course
+      - that is correct
+      - oui
+      - bien sûr
+      - d'accord
+      - sim
+      - está certo
+      - com certeza
   - intent: deny
     examples: |
       - no
@@ -39,6 +75,15 @@ nlu:
       - para nada
       - eso no
       - mejor no
+      - I disagree
+      - no thanks
+      - not at all
+      - non
+      - non merci
+      - pas du tout
+      - não
+      - não obrigado
+      - de jeito nenhum
   - intent: bot_challenge
     examples: |
       - quién eres
@@ -46,6 +91,15 @@ nlu:
       - eres un bot
       - cómo te llamas
       - qué eres
+      - who are you
+      - are you a person
+      - are you a bot
+      - qui es-tu
+      - es-tu un robot
+      - comment tu t’appelles
+      - quem é você
+      - você é uma pessoa
+      - você é um robô
   - intent: ask_capabilities
     examples: |
       - qué puedes hacer
@@ -54,6 +108,15 @@ nlu:
       - en qué me ayudas
       - puedes ayudarme
       - qué sabe hacer Sara
+      - what can you do
+      - how can you help me
+      - what are your features
+      - que peux-tu faire
+      - comment peux-tu m’aider
+      - quelles sont tes fonctions
+      - o que você pode fazer
+      - como você pode me ajudar
+      - quais são suas funções
   - intent: mood_great
     examples: |
       - estoy muy bien
@@ -61,6 +124,15 @@ nlu:
       - todo va excelente
       - estoy feliz
       - súper bien
+      - I am doing great
+      - I feel very good
+      - I am happy today
+      - je vais très bien
+      - je me sens très bien
+      - je suis heureux
+      - estou muito bem
+      - estou me sentindo ótimo
+      - estou feliz hoje
   - intent: mood_unhappy
     examples: |
       - estoy triste
@@ -68,3 +140,12 @@ nlu:
       - tuve un día difícil
       - estoy preocupado
       - no me siento bien
+      - I feel sad
+      - I am having a difficult day
+      - I feel worried
+      - je suis triste
+      - je passe une journée difficile
+      - je suis inquiet
+      - estou triste
+      - estou tendo um dia difícil
+      - estou preocupado
