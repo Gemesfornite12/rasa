@@ -241,6 +241,21 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_sara_web_app(self) -> None:
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"), "rb") as app_file:
+                body = app_file.read()
+        except OSError:
+            self._send_json(503, {"error": "web_client_unavailable"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _verified_uid(self) -> str | None:
         auth_header = self.headers.get("Authorization", "")
         scheme, separator, firebase_token = auth_header.partition(" ")
@@ -368,7 +383,10 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urllib.parse.urlsplit(self.path)
         route = parsed.path
-        if route in ("/", "/healthz"):
+        if route in ("/", "/index.html"):
+            self._send_sara_web_app()
+            return
+        if route == "/healthz":
             status, payload = self._health_payload()
             self._send_json(status, payload)
             return
