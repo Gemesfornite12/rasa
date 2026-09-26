@@ -46,6 +46,40 @@ def _safe_provider_field(value: Any) -> str:
     return safe or "unknown"
 
 
+def _safe_response_header(value: Any) -> str:
+    """Allow only short, printable request identifiers from response headers."""
+    if not isinstance(value, str):
+        return "unknown"
+    safe = "".join(
+        char for char in value.strip()
+        if char.isascii() and (char.isalnum() or char in "._:-")
+    )[:128]
+    return safe or "unknown"
+
+
+def _safe_provider_detail(value: Any) -> str:
+    """Bound structured provider error text and redact credential-like values."""
+    if not isinstance(value, str) or not value:
+        return "unknown"
+    import re
+
+    detail = value[:512]
+    detail = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [REDACTED]", detail)
+    detail = re.sub(
+        r"(?i)\b(api[_ -]?key|token|secret|authorization)\b\s*[:=]\s*[^\s,;]+",
+        r"\1=[REDACTED]", detail,
+    )
+    detail = re.sub(
+        r"(?i)\b(?:gsk|sk|rk|pk|ghp|github_pat)_[a-z0-9_-]{8,}\b",
+        "[REDACTED]", detail,
+    )
+    detail = re.sub(r"(?<!\S)[a-z0-9_./+=-]{32,}(?!\S)", "[REDACTED]", detail, flags=re.I)
+    detail = " ".join(
+        "".join(char if 32 <= ord(char) <= 126 else " " for char in detail).split()
+    )[:160]
+    return detail or "unknown"
+
+
 def allow_request(uid: str) -> bool:
     now = time.time()
     with _RATE_LOCK:
@@ -90,7 +124,7 @@ def _request(url: str, payload: bytes, content_type: str, timeout: int = 60) -> 
     except urllib.error.HTTPError as exc:
         # Read only enough to extract safe error labels; never log the response
         # message, request headers, prompt, image, or API key.
-        provider_type = provider_code = provider_param = "unknown"
+        provider_type = provider_code = provider_param = provider_detail = "unknown"
         try:
             provider_payload = json.loads(exc.read(4096))
             provider_error = (
@@ -102,13 +136,31 @@ def _request(url: str, payload: bytes, content_type: str, timeout: int = 60) -> 
                 provider_type = _safe_provider_field(provider_error.get("type"))
                 provider_code = _safe_provider_field(provider_error.get("code"))
                 provider_param = _safe_provider_field(provider_error.get("param"))
+                provider_detail = _safe_provider_detail(provider_error.get("message"))
         except Exception:
             pass
         endpoint = _safe_provider_field(url.rsplit("/", 1)[-1])
+        response_content_type = "unknown"
+        request_id = "unknown"
+        try:
+            if exc.headers:
+                content_type = exc.headers.get_content_type()
+                if isinstance(content_type, str) and all(
+                    char.isascii() and (char.isalnum() or char in "/.+-_ ")
+                    for char in content_type
+                ):
+                    response_content_type = content_type[:64] or "unknown"
+                request_id = _safe_response_header(
+                    exc.headers.get("x-request-id") or exc.headers.get("request-id")
+                )
+        except Exception:
+            pass
         print(
             "[groq] upstream_http_error "
             f"endpoint={endpoint} status={exc.code} "
-            f"type={provider_type} code={provider_code} param={provider_param}",
+            f"response_content_type={response_content_type} "
+            f"type={provider_type} code={provider_code} param={provider_param} "
+            f"request_id={request_id} detail={provider_detail}",
             flush=True,
         )
         if exc.code == 429:
