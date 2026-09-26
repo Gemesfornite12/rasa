@@ -16,7 +16,7 @@ Gateway autenticado para Sara. Rasa atiende el chat normal; las funciones de Fel
 - X Search con límites locales y un máximo de cinco resultados por búsqueda.
 - LiveDocs: creación, actualización y eliminación; recursos, documentos de texto, archivos y URL; recuperación semántica, rutas y extracción de páginas PPT; README; tareas, comentarios y registros; descarga del archivo original.
 
-Estas APIs no se llaman automáticamente para mensajes ordinarios: las rutas directas del gateway y los comandos explícitos de Sara son bajo demanda. Una extracción de URL no es una búsqueda web; la búsqueda debe solicitarse por separado.
+Estas APIs no se llaman automáticamente para mensajes ordinarios; se invocan mediante solicitudes explícitas a las rutas del gateway. La integración de comandos de chat y el almacenamiento de `doc_ref` en OmniStudio no están confirmados. Una extracción de URL no es una búsqueda web; la búsqueda debe solicitarse por separado.
 
 ## LiveDocs: referencias seguras por usuario
 

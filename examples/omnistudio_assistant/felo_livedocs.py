@@ -194,8 +194,13 @@ def _felo_upload(path: str, file_data: bytes, filename: str, media_type: str, ti
         headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json", "Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
+    class _NoUploadRedirect(urllib.request.HTTPRedirectHandler):
+        # Never forward the server-side Felo bearer token to a redirect target.
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
     try:
-        response = urllib.request.urlopen(request, timeout=90)
+        response = urllib.request.build_opener(_NoUploadRedirect()).open(request, timeout=90)
     except urllib.error.HTTPError as exc:
         retry = exc.headers.get("Retry-After") if exc.headers else None
         if exc.code == 429:
@@ -238,7 +243,9 @@ def _download_resource(handler: Any, short_id: str, resource_id: str, expires_in
             allowed_host = host == "openapi.felo.ai" or host.endswith(".amazonaws.com") or host.endswith(".amazonaws.com.cn")
             if destination.scheme != "https" or not allowed_host:
                 raise urllib.error.URLError("blocked redirect")
-            return super().redirect_request(req, fp, code, msg, headers, newurl)
+            # Signed download URLs are self-authorizing; do not copy Felo's
+            # bearer token (or other request headers) to the storage host.
+            return urllib.request.Request(newurl, headers={"Accept": "application/octet-stream"}, method="GET")
 
     try:
         response = urllib.request.build_opener(_SafeFeloRedirect()).open(request, timeout=60)
