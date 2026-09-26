@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import felo_livedocs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -1214,8 +1215,8 @@ def _do_get_felo(self: SaraGatewayHandler) -> None:
                 self._send_json(200, {"status": result.get("status"), "data": _without_livedoc_ids(_felo_data(result))})
             except FeloRequestError as exc: self._send_felo_error(exc)
             return
-        if parsed.path.startswith("/api/felo/livedocs"):
-            self._send_json(503, {"error": "livedoc_owner_store_unavailable"}); return
+        if felo_livedocs.handle(self, uid, "GET", parsed, _felo_request, FeloRequestError, _send_felo_error, RASA_AUTH_TOKEN, FELO_API_KEY):
+            return
         self._send_json(404, {"error": "not_found"})
         return
         return
@@ -1228,6 +1229,9 @@ def _do_post_felo(self: SaraGatewayHandler) -> None:
         _OLD_DO_POST_FELO(self); return
     uid = self._verified_uid()
     if uid is None: return
+    parsed = urllib.parse.urlsplit(self.path)
+    if felo_livedocs.handle(self, uid, "POST", parsed, _felo_request, FeloRequestError, _send_felo_error, RASA_AUTH_TOKEN, FELO_API_KEY):
+        return
     body = self._read_json_body()
     if body is None: return
     try:
@@ -1281,18 +1285,41 @@ def _do_post_felo(self: SaraGatewayHandler) -> None:
             data = _felo_data(result); stream = data.get("stream_key")
             if isinstance(stream, str): _remember_owner(FELO_STREAM_OWNERS, stream, uid)
             self._send_json(200, {"status": result.get("status"), "data": _without_livedoc_ids(data)}); return
-        # LiveDoc APIs intentionally have no exposed route until ownership can be
-        # durably bound to verified Firebase UIDs in an authoritative store.
-        if path.startswith("/api/felo/livedocs"):
-            self._send_json(503, {"error": "livedoc_owner_store_unavailable"}); return
         self._send_json(404, {"error": "not_found"})
     except FeloRequestError as exc:
         self._send_felo_error(exc)
 
 
+def _do_livedoc_write(self: SaraGatewayHandler, method: str) -> None:
+    parsed = urllib.parse.urlsplit(self.path)
+    if parsed.path != "/api/felo/livedocs" and not parsed.path.startswith("/api/felo/livedocs/"):
+        self._send_json(405, {"error": "method_not_allowed"})
+        return
+    uid = self._verified_uid()
+    if uid is None:
+        return
+    if not felo_livedocs.handle(self, uid, method, parsed, _felo_request, FeloRequestError, _send_felo_error, RASA_AUTH_TOKEN, FELO_API_KEY):
+        self._send_json(404, {"error": "not_found"})
+
+
+def _do_put_felo(self: SaraGatewayHandler) -> None:
+    _do_livedoc_write(self, "PUT")
+
+
+def _do_patch_felo(self: SaraGatewayHandler) -> None:
+    _do_livedoc_write(self, "PATCH")
+
+
+def _do_delete_felo(self: SaraGatewayHandler) -> None:
+    _do_livedoc_write(self, "DELETE")
+
+
 SaraGatewayHandler._proxy_rasa = _proxy_with_felo_tools
 SaraGatewayHandler.do_GET = _do_get_felo
 SaraGatewayHandler.do_POST = _do_post_felo
+SaraGatewayHandler.do_PUT = _do_put_felo
+SaraGatewayHandler.do_PATCH = _do_patch_felo
+SaraGatewayHandler.do_DELETE = _do_delete_felo
 
 
 if __name__ == "__main__":
