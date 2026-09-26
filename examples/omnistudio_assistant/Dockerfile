@@ -16,4 +16,4 @@ RUN rasa train
 # Render exposes the gateway; Rasa itself binds only to 127.0.0.1:10001.
 EXPOSE 10000
 ENTRYPOINT ["/bin/sh", "-c"]
-CMD ["test -n \"$RASA_AUTH_TOKEN\" || { echo 'RASA_AUTH_TOKEN is required'; exit 1; }; exec python3 /app/secure_gateway.py"]
+CMD ["export TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=1; test -n \"$RASA_AUTH_TOKEN\" || { echo 'RASA_AUTH_TOKEN is required'; exit 1; }; exec python3 /app/secure_gateway.py"]
