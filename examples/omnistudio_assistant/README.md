@@ -1,6 +1,6 @@
 # Sara para OmniStudio (Rasa 3.6)
 
-Gateway autenticado para Sara. Rasa atiende el chat normal; las funciones de Felo se ejecutan solo cuando la app o el usuario las solicita explícitamente. Las funciones multimedia de Gemini permanecen separadas.
+Gateway autenticado para Sara. Rasa atiende primero cada mensaje del chat de Sara. Si la intención cae en el fallback marcado `sara_fallback`, la app consulta el LLM de Felo para responder en el idioma del mensaje; las herramientas de Felo siguen ejecutándose solo cuando la app o el usuario las solicita explícitamente. Las funciones multimedia de Gemini permanecen separadas.
 
 ## Seguridad y despliegue
 
@@ -16,7 +16,7 @@ Gateway autenticado para Sara. Rasa atiende el chat normal; las funciones de Fel
 - X Search con límites locales y un máximo de cinco resultados por búsqueda.
 - LiveDocs: creación, actualización y eliminación; recursos, documentos de texto, archivos y URL; recuperación semántica, rutas y extracción de páginas PPT; README; tareas, comentarios y registros; descarga del archivo original.
 
-Estas APIs no se llaman automáticamente para mensajes ordinarios; se invocan mediante solicitudes explícitas a las rutas del gateway. La integración de comandos de chat y el almacenamiento de `doc_ref` en OmniStudio no están confirmados. Una extracción de URL no es una búsqueda web; la búsqueda debe solicitarse por separado.
+Las herramientas de Felo no se ejecutan automáticamente por un mensaje ordinario: requieren una solicitud explícita. Excepción: cuando Rasa marca `sara_fallback`, OmniStudio envía ese mensaje al LLM de Felo para responder en el idioma original; esto puede consumir créditos. Ese fallback no ejecuta herramientas ni aprende automáticamente de las conversaciones. Para mejorar Rasa, los ejemplos de cada idioma se agregan y revisan manualmente antes de volver a entrenar. Una extracción de URL no es una búsqueda web; la búsqueda debe solicitarse por separado.
 
 ## LiveDocs: referencias seguras por usuario
 
