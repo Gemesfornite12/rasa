@@ -55,9 +55,11 @@ class FeloToolTests(unittest.TestCase):
         upstream.assert_called_once()
 
     def test_x_results_clamped_to_five_and_uses_mock(self):
-        with patch.object(gw, "_felo_request", return_value=({"status": "ok", "data": {"items": []}}, "application/json")) as upstream:
-            gw._felo_x_request("tweet-search", {"query": "test", "limit": 500})
+        records = [{"id": str(i)} for i in range(8)]
+        with patch.object(gw, "_felo_request", return_value=({"status": "ok", "data": {"items": records}}, "application/json")) as upstream:
+            result = gw._felo_x_request("tweet-search", {"query": "test", "limit": 500})
         self.assertEqual(upstream.call_args.args[2]["limit"], 5)
+        self.assertEqual(len(result["data"]["items"]), 5)
 
     def test_cross_user_thread_and_unknown_livedoc_fail_closed(self):
         gw._remember_owner(gw.FELO_THREAD_OWNERS, "thread-a", "uid-a")

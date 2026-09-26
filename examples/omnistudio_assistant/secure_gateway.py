@@ -992,6 +992,13 @@ def _felo_x_request(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         recent.append(now)
         _FELO_X_REQUEST_TIMES[:] = recent
     result, _ = _felo_request("POST", paths[kind], safe_payload)
+    # Bound records returned to callers as well, even if the provider ignores the
+    # requested limit. Provider credits are charged on results returned upstream.
+    data = result.get("data")
+    if isinstance(data, dict):
+        for key in ("users", "tweets", "replies", "results", "items"):
+            if isinstance(data.get(key), list):
+                data[key] = data[key][:5]
     return result
 
 
