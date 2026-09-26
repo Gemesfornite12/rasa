@@ -811,5 +811,482 @@ _ORIGINAL_SARA_PROXY_RASA = SaraGatewayHandler._proxy_rasa
 SaraGatewayHandler._proxy_rasa = _sara_proxy_with_felo_tools
 
 
+# Explicit, Firebase-authenticated on-demand Felo tools. These are HTTP integrations,
+# not installed Felo Skills or Rasa plugins.
+FELO_API_ROOT = "https://openapi.felo.ai"
+FELO_LLM_DEFAULT_MODEL = "gpt-5.6-luna"
+FELO_MINDMAP_LAYOUTS = {
+    "MIND_MAP", "LOGICAL_STRUCTURE", "ORGANIZATION_STRUCTURE",
+    "CATALOG_ORGANIZATION", "TIMELINE", "FISHBONE",
+}
+FELO_TASK_OWNERS: dict[str, tuple[str, float]] = {}
+FELO_THREAD_OWNERS: dict[str, tuple[str, float]] = {}
+FELO_STREAM_OWNERS: dict[str, tuple[str, float]] = {}
+_FELO_OWNER_TTL = 24 * 60 * 60
+_FELO_STATE_LOCK = threading.Lock()
+_FELO_X_REQUEST_TIMES: list[float] = []
+_FELO_X_LOCK = threading.Lock()
+
+
+class FeloRequestError(RuntimeError):
+    def __init__(self, code: str, http_status: int = 502, retry_after: str | None = None):
+        super().__init__(code)
+        self.code = code
+        self.http_status = http_status
+        self.retry_after = retry_after
+
+
+def _felo_request(method: str, path: str, body: Any = None, *, accept: str = "application/json") -> tuple[dict[str, Any], Any]:
+    if not FELO_API_KEY:
+        raise FeloRequestError("felo_not_configured", 503)
+    url = FELO_API_ROOT + path
+    data = None if body is None else _json_bytes(body)
+    headers = {"Authorization": f"Bearer {FELO_API_KEY}", "Accept": accept}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        response = urllib.request.urlopen(req, timeout=60)
+    except urllib.error.HTTPError as exc:
+        retry = exc.headers.get("Retry-After") if exc.headers else None
+        if exc.code == 429:
+            raise FeloRequestError("felo_rate_limited", 429, retry) from None
+        if exc.code == 402:
+            raise FeloRequestError("felo_insufficient_credits", 402) from None
+        if exc.code in (401, 403):
+            raise FeloRequestError("felo_auth_failed", 502) from None
+        raise FeloRequestError("felo_provider_error", 502) from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise FeloRequestError("felo_unavailable", 502) from None
+    with response:
+        raw = response.read(MAX_UPSTREAM_BYTES + 1)
+        content_type = response.headers.get("Content-Type", "application/json")
+    if len(raw) > MAX_UPSTREAM_BYTES:
+        raise FeloRequestError("felo_response_too_large", 502)
+    if "json" not in content_type.lower():
+        raise FeloRequestError("felo_invalid_response", 502)
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise FeloRequestError("felo_invalid_response", 502) from None
+    if not isinstance(payload, dict):
+        raise FeloRequestError("felo_invalid_response", 502)
+    # The OpenAI/Anthropic-compatible /api/v1 endpoints return their standard
+    # protocol objects rather than the Harness {status,data} envelope.
+    if not path.startswith("/api/v1/") and payload.get("status") not in ("ok", 200, "200"): 
+        raise FeloRequestError("felo_provider_error", 502)
+    return payload, content_type
+
+
+def _felo_data(payload: dict[str, Any]) -> dict[str, Any]:
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise FeloRequestError("felo_invalid_response", 502)
+    return data
+
+
+def _remember_owner(table: dict[str, tuple[str, float]], key: Any, uid: str) -> None:
+    if not isinstance(key, str) or not key or len(key) > 256:
+        return
+    now = time.time()
+    with _FELO_STATE_LOCK:
+        for old_key, (_, expiry) in list(table.items()):
+            if expiry < now:
+                table.pop(old_key, None)
+        table[key] = (uid, now + _FELO_OWNER_TTL)
+
+
+def _owns(table: dict[str, tuple[str, float]], key: str, uid: str) -> bool:
+    now = time.time()
+    with _FELO_STATE_LOCK:
+        owner = table.get(key)
+        if not owner or owner[1] < now:
+            table.pop(key, None)
+            return False
+        return owner[0] == uid
+
+
+def _without_livedoc_ids(data: dict[str, Any]) -> dict[str, Any]:
+    # LiveDoc identifiers are never returned or accepted as caller-selected context
+    # until durable per-Firebase-UID ownership is available.
+    return {k: v for k, v in data.items() if k not in {"live_doc_short_id", "livedoc_short_id"}}
+
+
+def _felo_llm(protocol: str, request_body: dict[str, Any]) -> dict[str, Any]:
+    endpoints = {"responses": "/api/v1/responses", "chat/completions": "/api/v1/chat/completions", "messages": "/api/v1/messages"}
+    if protocol not in endpoints:
+        raise FeloRequestError("invalid_llm_protocol", 400)
+    # Only forward the protocol's normal non-streaming input fields. Never pass
+    # tools/tool_choice through and never execute model-requested tool calls.
+    allowed = {"model", "input", "messages", "max_output_tokens", "max_tokens", "temperature", "top_p", "system"}
+    payload = {k: v for k, v in request_body.items() if k in allowed}
+    if "model" not in payload or not isinstance(payload["model"], str) or not payload["model"].strip():
+        raise FeloRequestError("llm_model_required", 400)
+    payload["stream"] = False
+    if protocol == "responses" and not (isinstance(payload.get("input"), (str, list))):
+        raise FeloRequestError("llm_input_required", 400)
+    if protocol != "responses" and not isinstance(payload.get("messages"), list):
+        raise FeloRequestError("llm_messages_required", 400)
+    result, _ = _felo_request("POST", endpoints[protocol], payload)
+    return result
+
+
+def _llm_text(result: dict[str, Any]) -> str:
+    # Support the documented protocol shapes, but preserve no raw request secrets.
+    chunks: list[str] = []
+    for item in result.get("output", []) if isinstance(result.get("output"), list) else []:
+        if isinstance(item, dict):
+            for part in item.get("content", []) if isinstance(item.get("content"), list) else []:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    chunks.append(part["text"])
+    choices = result.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        msg = choices[0].get("message")
+        if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+            chunks.append(msg["content"])
+    content = result.get("content")
+    if isinstance(content, list):
+        chunks.extend(p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str))
+    return "\n".join(x.strip() for x in chunks if x.strip())[:12000]
+
+
+def _felo_x_request(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    paths = {
+        "user-info": "/v2/x/user/info", "user-search": "/v2/x/user/search",
+        "user-tweets": "/v2/x/user/tweets", "tweet-search": "/v2/x/tweet/search",
+        "tweet-replies": "/v2/x/tweet/replies",
+    }
+    if kind not in paths:
+        raise FeloRequestError("invalid_x_operation", 400)
+    # Avoid charging for large result sets. Profile info may batch usernames but is
+    # also capped; every other API call is capped at five returned records.
+    safe_payload = dict(payload)
+    if kind == "user-info":
+        names = safe_payload.get("usernames")
+        if not isinstance(names, list) or not names or len(names) > 5 or any(not isinstance(n, str) or not n.strip() for n in names):
+            raise FeloRequestError("valid_usernames_required_max_5", 400)
+    elif kind in {"user-search", "tweet-search"}:
+        q = safe_payload.get("query")
+        if not isinstance(q, str) or not q.strip() or len(q) > 1000:
+            raise FeloRequestError("valid_query_required", 400)
+        requested_limit = safe_payload.get("limit", 5)
+        if isinstance(requested_limit, bool) or not isinstance(requested_limit, int):
+            requested_limit = 5
+        safe_payload["limit"] = min(max(requested_limit, 1), 5)
+    elif kind == "user-tweets":
+        if not (isinstance(safe_payload.get("username"), str) or isinstance(safe_payload.get("x_user_id"), str)):
+            raise FeloRequestError("username_or_x_user_id_required", 400)
+        requested_limit = safe_payload.get("limit", 5)
+        if isinstance(requested_limit, bool) or not isinstance(requested_limit, int):
+            requested_limit = 5
+        safe_payload["limit"] = min(max(requested_limit, 1), 5)
+    else:
+        ids = safe_payload.get("tweet_ids")
+        if not isinstance(ids, list) or not ids or len(ids) > 5 or any(not isinstance(x, str) for x in ids):
+            raise FeloRequestError("valid_tweet_ids_required_max_5", 400)
+    now = time.time()
+    with _FELO_X_LOCK:
+        recent = [t for t in _FELO_X_REQUEST_TIMES if now - t < 600]
+        if len(recent) >= 10 or len([t for t in recent if now - t < 60]) >= 3 or (recent and now - recent[-1] < 10):
+            raise FeloRequestError("x_search_local_rate_limited", 429, "10")
+        recent.append(now)
+        _FELO_X_REQUEST_TIMES[:] = recent
+    result, _ = _felo_request("POST", paths[kind], safe_payload)
+    return result
+
+
+def _sse_text(stream_key: str) -> str:
+    # Called only after stream_key ownership verification. SSE is bounded and parsed
+    # as data events; malformed JSON and unknown event formats are ignored safely.
+    if not FELO_API_KEY:
+        raise FeloRequestError("felo_not_configured", 503)
+    request = urllib.request.Request(
+        f"{FELO_API_ROOT}/v2/conversations/stream/{urllib.parse.quote(stream_key, safe='')}",
+        headers={"Authorization": f"Bearer {FELO_API_KEY}", "Accept": "text/event-stream"}, method="GET")
+    try:
+        response = urllib.request.urlopen(request, timeout=60)
+    except urllib.error.HTTPError as exc:
+        retry = exc.headers.get("Retry-After") if exc.headers else None
+        raise FeloRequestError("superagent_stream_failed", 429 if exc.code == 429 else 502, retry) from None
+    parts: list[str] = []
+    size = 0
+    event = "message"
+    with response:
+        for raw_line in response:
+            size += len(raw_line)
+            if size > MAX_UPSTREAM_BYTES:
+                raise FeloRequestError("superagent_response_too_large", 502)
+            line = raw_line.decode("utf-8", "replace").rstrip("\r\n")
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                raw_data = line[5:].strip()
+                if event == "done":
+                    break
+                if event == "error":
+                    raise FeloRequestError("superagent_stream_error", 502)
+                try:
+                    item = json.loads(raw_data)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict) and isinstance(item.get("content"), str):
+                    parts.append(item["content"])
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+                event = "message"
+    return "".join(parts).strip()[:12000]
+
+
+def _felo_chat_tool(message: str, uid: str) -> str | None:
+    """Run only an unambiguous slash-command tool request; ordinary chat stays Rasa."""
+    match = re.match(r"^\s*/(ppt|landing|mindmap|research|continue|llm|x)\b\s*(.*)$", message, re.I | re.S)
+    if match:
+        command, arg = match.group(1).lower(), match.group(2).strip()
+    else:
+        # Accept unmistakable natural-language requests while leaving ordinary chat
+        # to Rasa. Each pattern names the requested artifact/tool explicitly.
+        patterns = [
+            ("ppt", r"^(?:crea|genera|prepara|haz)\s+(?:una?\s+)?(?:presentaci[oó]n|ppt)(?:\s+(?:sobre|de|acerca de))?\s*[:,-]?\s*(.+)$"),
+            ("landing", r"^(?:crea|genera|dise[nñ]a)\s+(?:una?\s+)?(?:landing page|p[aá]gina de aterrizaje)(?:\s+(?:para|sobre|de))?\s*[:,-]?\s*(.+)$"),
+            ("mindmap", r"^(?:crea|genera|haz)\s+(?:un\s+)?(?:mapa mental|mapa conceptual)(?:\s+(?:sobre|de|acerca de))?\s*[:,-]?\s*(.+)$"),
+            ("research", r"^(?:haz|inicia|realiza)\s+(?:una?\s+)?(?:investigaci[oó]n profunda|investigaci[oó]n exhaustiva|deep research)(?:\s+(?:sobre|de|acerca de))?\s*[:,-]?\s*(.+)$"),
+            ("llm", r"^(?:usa|consulta)\s+(?:el\s+)?(?:llm|modelo de lenguaje)(?:\s+(?:para|sobre))?\s*[:,-]?\s*(.+)$"),
+            ("x", r"^(?:busca|investiga)\s+(?:en\s+)?x(?:\s+(?:sobre|de|acerca de))?\s*[:,-]?\s*(.+)$"),
+        ]
+        for candidate, pattern in patterns:
+            natural = re.match(pattern, message.strip(), re.I | re.S)
+            if natural:
+                command, arg = candidate, natural.group(1).strip()
+                break
+        else:
+            return None
+    if not arg:
+        return "Indícame el tema o consulta después del comando."
+    try:
+        if command in {"ppt", "landing"}:
+            query = arg[:2000]
+            path = "/v2/ppts" if command == "ppt" else "/v2/landing_page"
+            payload, _ = _felo_request("POST", path, {"query": query})
+            data = _felo_data(payload)
+            task = data.get("task_id")
+            if not isinstance(task, str):
+                return "Felo no devolvió un identificador de tarea válido."
+            _remember_owner(FELO_TASK_OWNERS, task, uid)
+            kind = "presentación" if command == "ppt" else "landing page"
+            return f"Inicié la tarea de {kind} (id {task}). Puedes consultar el estado con /api/felo/tasks/{task}. Los enlaces que aparezcan serán solo una vista previa; no los publicaré ni compartiré."
+        if command == "mindmap":
+            layout = "MIND_MAP"
+            layout_match = re.match(r"^(MIND_MAP|LOGICAL_STRUCTURE|ORGANIZATION_STRUCTURE|CATALOG_ORGANIZATION|TIMELINE|FISHBONE)\s*:\s*(.*)$", arg, re.I | re.S)
+            if layout_match:
+                layout, arg = layout_match.group(1).upper(), layout_match.group(2).strip()
+            if not arg or len(arg) > 2000:
+                return "El tema del mapa mental debe tener entre 1 y 2000 caracteres."
+            payload, _ = _felo_request("POST", "/v2/mindmap", {"query": arg, "layout": layout})
+            data = _without_livedoc_ids(_felo_data(payload))
+            # Do not render provider HTML/SVG directly in chat; report preview URL only.
+            preview = data.get("mindmap_url")
+            return "Mapa mental listo." + (f" Vista previa: {preview} (no publicado ni compartido)." if isinstance(preview, str) else "")
+        if command in {"research", "continue"}:
+            query = arg
+            if command == "continue":
+                thread, sep, query = arg.partition(" ")
+                if not sep or not _owns(FELO_THREAD_OWNERS, thread, uid):
+                    return "No encuentro una investigación activa tuya para continuar. Iníciala con /research consulta."
+                payload, _ = _felo_request("POST", f"/v2/conversations/{urllib.parse.quote(thread, safe='')}/follow_up", {"query": query[:2000]})
+            else:
+                if len(query) > 2000:
+                    return "La consulta de investigación debe tener como máximo 2000 caracteres."
+                payload, _ = _felo_request("POST", "/v2/conversations", {"query": query, "accept_language": "es"})
+            data = _felo_data(payload)
+            thread, stream = data.get("thread_short_id"), data.get("stream_key")
+            if not isinstance(thread, str) or not isinstance(stream, str):
+                return "Felo no devolvió identificadores válidos para la investigación."
+            _remember_owner(FELO_THREAD_OWNERS, thread, uid)
+            _remember_owner(FELO_STREAM_OWNERS, stream, uid)
+            answer = _sse_text(stream)
+            return (answer or "La investigación terminó sin texto legible en el flujo.") + f"\n\nID para continuar: {thread}"
+        if command == "llm":
+            if len(arg) > 4000:
+                return "La consulta al modelo debe tener como máximo 4000 caracteres."
+            result = _felo_llm("chat/completions", {"model": FELO_LLM_DEFAULT_MODEL, "messages": [{"role": "user", "content": arg}]})
+            text = _llm_text(result) or "El modelo no devolvió texto legible. No ejecuté ninguna llamada a herramientas que el modelo pudiera solicitar."
+            return "Consulta al LLM (puede consumir créditos de Felo):\n" + text
+        if command == "x":
+            if not arg.lower().startswith("buscar "):
+                return "Para X usa /x buscar consulta. Las búsquedas X pueden consumir créditos y están limitadas a cinco resultados."
+            result = _felo_x_request("tweet-search", {"query": arg[7:].strip(), "limit": 5})
+            return json.dumps(result.get("data", result), ensure_ascii=False)[:8000]
+    except FeloRequestError as exc:
+        if exc.http_status == 429:
+            return "Felo limitó temporalmente esta solicitud. Inténtalo más tarde." + (f" Reintenta en {exc.retry_after} segundos." if exc.retry_after else "")
+        if exc.http_status == 402:
+            return "Felo informa que no hay créditos suficientes para completar esta solicitud."
+        if exc.code == "felo_not_configured":
+            return "Esta función de Felo no está configurada en el servidor."
+        return "No pude completar esa función de Felo ahora."
+    except (ValueError, TypeError, KeyError):
+        return "La solicitud no tenía un formato válido para esa función."
+    return None
+
+
+def _send_felo_error(self: SaraGatewayHandler, exc: FeloRequestError) -> None:
+    payload = {"error": exc.code}
+    if exc.retry_after:
+        self.send_response(exc.http_status)
+        body = _json_bytes(payload)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Retry-After", exc.retry_after)
+        self.end_headers()
+        self.wfile.write(body)
+    else:
+        self._send_json(exc.http_status, payload)
+
+
+_OLD_DO_GET_FELO = SaraGatewayHandler.do_GET
+_OLD_DO_POST_FELO = SaraGatewayHandler.do_POST
+_OLD_PROXY_FELO = SaraGatewayHandler._proxy_rasa
+
+
+def _proxy_with_felo_tools(self: SaraGatewayHandler, uid: str, method: str, path: str, body: Any = None) -> None:
+    if method == "POST" and path == "/webhooks/rest/webhook" and isinstance(body, dict):
+        message = body.get("message")
+        if isinstance(message, str):
+            reply = _felo_chat_tool(message, uid)
+            if reply is not None:
+                self._send_json(200, [{"recipient_id": uid, "text": reply}])
+                return
+    _OLD_PROXY_FELO(self, uid, method, path, body)
+
+
+def _do_get_felo(self: SaraGatewayHandler) -> None:
+    parsed = urllib.parse.urlsplit(self.path)
+    uid = self._verified_uid() if parsed.path.startswith("/api/felo/") else None
+    if parsed.path.startswith("/api/felo/"):
+        if uid is None:
+            return
+        if parsed.path == "/api/felo/llm/models":
+            try:
+                result, _ = _felo_request("GET", "/api/v1/models")
+                self._send_json(200, result)
+            except FeloRequestError as exc:
+                self._send_felo_error(exc)
+            return
+        match = re.fullmatch(r"/api/felo/tasks/([A-Za-z0-9_-]{1,128})", parsed.path)
+        if match:
+            task = match.group(1)
+            if not _owns(FELO_TASK_OWNERS, task, uid):
+                self._send_json(404, {"error": "task_not_found"}); return
+            action = urllib.parse.parse_qs(parsed.query).get("view", ["status"])[0]
+            if action not in {"status", "historical"}:
+                self._send_json(400, {"error": "invalid_task_view"}); return
+            try:
+                result, _ = _felo_request("GET", f"/v2/tasks/{urllib.parse.quote(task, safe='')}/{action}")
+                data = _without_livedoc_ids(_felo_data(result))
+                for k in ("ppt_url", "ai_page_html", "mindmap_url"):
+                    if isinstance(data.get(k), str): data[k + "_preview_only"] = True
+                self._send_json(200, {"status": result.get("status"), "data": data})
+            except FeloRequestError as exc: self._send_felo_error(exc)
+            return
+        match = re.fullmatch(r"/api/felo/superagent/streams/([A-Za-z0-9_-]{1,256})", parsed.path)
+        if match:
+            stream = match.group(1)
+            if not _owns(FELO_STREAM_OWNERS, stream, uid):
+                self._send_json(404, {"error": "stream_not_found"}); return
+            try: self._send_json(200, {"text": _sse_text(stream)})
+            except FeloRequestError as exc: self._send_felo_error(exc)
+            return
+        match = re.fullmatch(r"/api/felo/superagent/threads/([A-Za-z0-9_-]{1,128})", parsed.path)
+        if match:
+            thread = match.group(1)
+            if not _owns(FELO_THREAD_OWNERS, thread, uid):
+                self._send_json(404, {"error": "thread_not_found"}); return
+            try:
+                result, _ = _felo_request("GET", f"/v2/conversations/{urllib.parse.quote(thread, safe='')}")
+                self._send_json(200, {"status": result.get("status"), "data": _without_livedoc_ids(_felo_data(result))})
+            except FeloRequestError as exc: self._send_felo_error(exc)
+            return
+        if parsed.path.startswith("/api/felo/livedocs"):
+            self._send_json(503, {"error": "livedoc_owner_store_unavailable"}); return
+        self._send_json(404, {"error": "not_found"})
+        return
+        return
+    _OLD_DO_GET_FELO(self)
+
+
+def _do_post_felo(self: SaraGatewayHandler) -> None:
+    path = urllib.parse.urlsplit(self.path).path
+    if not path.startswith("/api/felo/"):
+        _OLD_DO_POST_FELO(self); return
+    uid = self._verified_uid()
+    if uid is None: return
+    body = self._read_json_body()
+    if body is None: return
+    try:
+        if path == "/api/felo/llm":
+            protocol = body.get("protocol", "chat/completions")
+            if not isinstance(protocol, str): raise FeloRequestError("invalid_llm_protocol", 400)
+            result = _felo_llm(protocol, body)
+            self._send_json(200, result); return
+        if path in {"/api/felo/ppt", "/api/felo/landing-page"}:
+            query = body.get("query")
+            if not isinstance(query, str) or not query.strip() or len(query) > 4000: raise FeloRequestError("valid_query_required_max_4000", 400)
+            if path.endswith("/ppt"):
+                create_body = {"query": query.strip()}
+                config = body.get("ppt_config")
+                if isinstance(config, dict) and set(config) <= {"ai_theme_id"}: create_body["ppt_config"] = config
+                upstream_path = "/v2/ppts"
+            else:
+                create_body = {"query": query.strip()}
+                upstream_path = "/v2/landing_page"
+            result, _ = _felo_request("POST", upstream_path, create_body)
+            data = _felo_data(result)
+            task = data.get("task_id")
+            if isinstance(task, str): _remember_owner(FELO_TASK_OWNERS, task, uid)
+            self._send_json(200, {"status": result.get("status"), "data": _without_livedoc_ids(data), "artifact_policy": "preview_only_no_publish_or_share"}); return
+        if path == "/api/felo/mindmap":
+            query = body.get("query"); layout = body.get("layout", "MIND_MAP")
+            if not isinstance(query, str) or not query.strip() or len(query) > 2000 or not isinstance(layout, str) or layout not in FELO_MINDMAP_LAYOUTS:
+                raise FeloRequestError("valid_query_and_layout_required", 400)
+            result, _ = _felo_request("POST", "/v2/mindmap", {"query": query.strip(), "layout": layout})
+            self._send_json(200, {"status": result.get("status"), "data": _without_livedoc_ids(_felo_data(result)), "artifact_policy": "preview_only_no_publish_or_share"}); return
+        if path == "/api/felo/x/search":
+            kind = body.pop("operation", "tweet-search")
+            if not isinstance(kind, str): raise FeloRequestError("invalid_x_operation", 400)
+            self._send_json(200, _felo_x_request(kind, body)); return
+        if path == "/api/felo/superagent":
+            query = body.get("query")
+            if not isinstance(query, str) or not query.strip() or len(query) > 2000: raise FeloRequestError("valid_query_required_max_2000", 400)
+            result, _ = _felo_request("POST", "/v2/conversations", {"query": query.strip(), "accept_language": "es"})
+            data = _felo_data(result)
+            thread, stream = data.get("thread_short_id"), data.get("stream_key")
+            if isinstance(thread, str): _remember_owner(FELO_THREAD_OWNERS, thread, uid)
+            if isinstance(stream, str): _remember_owner(FELO_STREAM_OWNERS, stream, uid)
+            self._send_json(200, {"status": result.get("status"), "data": _without_livedoc_ids(data)}); return
+        match = re.fullmatch(r"/api/felo/superagent/threads/([A-Za-z0-9_-]{1,128})/follow-up", path)
+        if match:
+            thread = match.group(1)
+            if not _owns(FELO_THREAD_OWNERS, thread, uid): self._send_json(404, {"error": "thread_not_found"}); return
+            query = body.get("query")
+            if not isinstance(query, str) or not query.strip() or len(query) > 2000: raise FeloRequestError("valid_query_required_max_2000", 400)
+            result, _ = _felo_request("POST", f"/v2/conversations/{urllib.parse.quote(thread, safe='')}/follow_up", {"query": query.strip()})
+            data = _felo_data(result); stream = data.get("stream_key")
+            if isinstance(stream, str): _remember_owner(FELO_STREAM_OWNERS, stream, uid)
+            self._send_json(200, {"status": result.get("status"), "data": _without_livedoc_ids(data)}); return
+        # LiveDoc APIs intentionally have no exposed route until ownership can be
+        # durably bound to verified Firebase UIDs in an authoritative store.
+        if path.startswith("/api/felo/livedocs"):
+            self._send_json(503, {"error": "livedoc_owner_store_unavailable"}); return
+        self._send_json(404, {"error": "not_found"})
+    except FeloRequestError as exc:
+        self._send_felo_error(exc)
+
+
+SaraGatewayHandler._proxy_rasa = _proxy_with_felo_tools
+SaraGatewayHandler.do_GET = _do_get_felo
+SaraGatewayHandler.do_POST = _do_post_felo
+
+
 if __name__ == "__main__":
     main()
