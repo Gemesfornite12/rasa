@@ -349,6 +349,11 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
                     self._send_json(502, {"error": "rasa_response_too_large"})
                     return
                 content_type = response.headers.get("Content-Type", "application/json")
+                if method == "POST" and path == "/webhooks/rest/webhook" and response.status == 200:
+                    fallback_text = _sara_felo_fallback_reply(uid, body, result)
+                    if fallback_text:
+                        result = _json_bytes([{"recipient_id": uid, "text": fallback_text}])
+                        content_type = "application/json; charset=utf-8"
                 self.send_response(response.status)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(result)))
@@ -845,6 +850,9 @@ _FELO_OWNER_TTL = 24 * 60 * 60
 _FELO_STATE_LOCK = threading.Lock()
 _FELO_X_REQUEST_TIMES: list[float] = []
 _FELO_X_LOCK = threading.Lock()
+FELO_FALLBACK_REQUESTS_PER_MINUTE = 6
+_FELO_FALLBACK_REQUEST_TIMES: dict[str, list[float]] = {}
+_FELO_FALLBACK_LOCK = threading.Lock()
 
 
 class FeloRequestError(RuntimeError):
@@ -967,6 +975,68 @@ def _llm_text(result: dict[str, Any]) -> str:
     if isinstance(content, list):
         chunks.extend(p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str))
     return "\n".join(x.strip() for x in chunks if x.strip())[:12000]
+
+
+def _allow_felo_fallback(uid: str) -> bool:
+    now = time.time()
+    with _FELO_FALLBACK_LOCK:
+        recent = [stamp for stamp in _FELO_FALLBACK_REQUEST_TIMES.get(uid, []) if now - stamp < 60]
+        if len(recent) >= FELO_FALLBACK_REQUESTS_PER_MINUTE:
+            _FELO_FALLBACK_REQUEST_TIMES[uid] = recent
+            return False
+        recent.append(now)
+        _FELO_FALLBACK_REQUEST_TIMES[uid] = recent
+        return True
+
+
+def _sara_felo_fallback_reply(uid: str, rasa_body: Any, rasa_response: bytes) -> str | None:
+    """Call Felo only when Rasa explicitly flags its reply for Sara fallback."""
+    if not FELO_API_KEY or not isinstance(rasa_body, dict):
+        return None
+    message = rasa_body.get("message")
+    if not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE_CHARS:
+        return None
+    try:
+        replies = json.loads(rasa_response)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(replies, list):
+        return None
+    fallback_marked = False
+    for item in replies:
+        if not isinstance(item, dict):
+            continue
+        custom = item.get("custom")
+        if not isinstance(custom, dict):
+            continue
+        flag = custom.get("sara_fallback")
+        if flag is True or (isinstance(flag, str) and flag.strip().lower() == "true"):
+            fallback_marked = True
+            break
+    if not fallback_marked or not _allow_felo_fallback(uid):
+        return None
+    prompt = (
+        "Eres Sara, asistente de OmniStudio. Responde en el mismo idioma del mensaje del usuario, "
+        "con claridad y brevedad (idealmente de una a cuatro frases). No afirmes haber buscado "
+        "en internet, accedido a cuentas ni ejecutado acciones o herramientas si no ocurrieron. "
+        "No pidas contraseñas, claves ni códigos. Si no puedes responder con seguridad, dilo "
+        "sin inventar. No uses ni solicites herramientas."
+    )
+    try:
+        result = _felo_llm("chat/completions", {
+            "model": FELO_LLM_DEFAULT_MODEL,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": message.strip()},
+            ],
+            "max_tokens": 1000,
+            "temperature": 0.2,
+        })
+        text = _llm_text(result).strip()
+        return text[:4000] if text else None
+    except (FeloRequestError, ValueError, TypeError, KeyError, OSError, TimeoutError):
+        # Keep Rasa's original fallback reply if the provider fails.
+        return None
 
 
 def _felo_x_request(kind: str, payload: dict[str, Any]) -> dict[str, Any]:

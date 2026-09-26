@@ -24,9 +24,9 @@ responses:
   utter_deny:
     - text: "Está bien. Cuéntame qué necesitas."
   utter_bot_challenge:
-    - text: "Soy Sara, el asistente de OmniStudio. En esta primera versión respondo con conversaciones e intenciones básicas de Rasa."
+    - text: "Soy Sara, el asistente de OmniStudio. Rasa responde primero y Felo puede apoyar cuando se activa el fallback."
   utter_capabilities:
-    - text: "Por ahora puedo atender saludos, agradecimientos y algunas preguntas sencillas. Todavía no tengo respuestas abiertas ni búsqueda web; esas funciones se añadirán por etapas."
+    - text: "Puedo responder algunas solicitudes directamente con Rasa. Si Rasa no reconoce algo, Felo puede intentar ayudar. También puedes pedirme búsquedas web; algunas funciones siguen en desarrollo."
   utter_mood_great:
     - text: "¡Qué bueno! ¿Qué te gustaría hacer ahora?"
   utter_mood_unhappy:
