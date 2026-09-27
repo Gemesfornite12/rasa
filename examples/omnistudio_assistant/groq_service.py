@@ -125,20 +125,54 @@ def _request(url: str, payload: bytes, content_type: str, timeout: int = 60) -> 
         # Read only enough to extract safe error labels; never log the response
         # message, request headers, prompt, image, or API key.
         provider_type = provider_code = provider_param = provider_detail = "unknown"
+        body_shape = error_shape = "unknown"
+        body_keys = error_keys = "unknown"
         try:
             provider_payload = json.loads(exc.read(4096))
-            provider_error = (
-                provider_payload.get("error")
-                if isinstance(provider_payload, dict)
-                else None
-            )
-            if isinstance(provider_error, dict):
-                provider_type = _safe_provider_field(provider_error.get("type"))
-                provider_code = _safe_provider_field(provider_error.get("code"))
-                provider_param = _safe_provider_field(provider_error.get("param"))
-                provider_detail = _safe_provider_detail(provider_error.get("message"))
+            if isinstance(provider_payload, dict):
+                body_shape = "object"
+                safe_keys = ("error", "message", "detail", "code", "type", "param", "status")
+                body_keys = ",".join(key for key in safe_keys if key in provider_payload) or "other"
+                provider_error = provider_payload.get("error")
+                error_source = provider_error if isinstance(provider_error, dict) else provider_payload
+                if isinstance(provider_error, dict):
+                    error_shape = "object"
+                    error_keys = ",".join(
+                        key for key in safe_keys if key in provider_error
+                    ) or "other"
+                elif isinstance(provider_error, str):
+                    error_shape = "string"
+                elif "error" not in provider_payload:
+                    error_shape = "missing"
+                elif provider_error is None:
+                    error_shape = "null"
+                else:
+                    error_shape = "other"
+                provider_type = _safe_provider_field(error_source.get("type"))
+                provider_code = _safe_provider_field(error_source.get("code"))
+                provider_param = _safe_provider_field(error_source.get("param"))
+                if isinstance(provider_error, dict):
+                    provider_detail = _safe_provider_detail(
+                        provider_error.get("message") or provider_error.get("detail")
+                    )
+            elif isinstance(provider_payload, list):
+                body_shape = "array"
+                body_keys = "none"
+                error_shape = "not_applicable"
+            elif isinstance(provider_payload, str):
+                body_shape = "string"
+                body_keys = "none"
+                error_shape = "not_applicable"
+            elif provider_payload is None:
+                body_shape = "null"
+                body_keys = "none"
+                error_shape = "not_applicable"
+            else:
+                body_shape = "scalar"
+                body_keys = "none"
+                error_shape = "not_applicable"
         except Exception:
-            pass
+            body_shape = "unreadable"
         endpoint = _safe_provider_field(url.rsplit("/", 1)[-1])
         response_content_type = "unknown"
         request_id = "unknown"
@@ -159,6 +193,8 @@ def _request(url: str, payload: bytes, content_type: str, timeout: int = 60) -> 
             "[groq] upstream_http_error "
             f"endpoint={endpoint} status={exc.code} "
             f"response_content_type={response_content_type} "
+            f"body_shape={body_shape} body_keys={body_keys} "
+            f"error_shape={error_shape} error_keys={error_keys} "
             f"type={provider_type} code={provider_code} param={provider_param} "
             f"request_id={request_id} detail={provider_detail}",
             flush=True,
