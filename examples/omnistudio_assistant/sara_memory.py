@@ -171,8 +171,10 @@ def fetch_relevant_context(
         return ""
     if not isinstance(payload, dict):
         raise SaraMemoryFetchError("unexpected_shape")
+    # The authenticated, UID-scoped RTDB path and security rules enforce ownership.
+    # Accept legacy notes without ownerUid, but reject any explicit mismatch.
     own_entries = [
         entry for entry in payload.values()
-        if isinstance(entry, dict) and entry.get("ownerUid") == uid
+        if isinstance(entry, dict) and entry.get("ownerUid") in (None, "", uid)
     ]
     return select_relevant_context(own_entries, query)

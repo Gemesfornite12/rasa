@@ -87,6 +87,27 @@ class SaraMemoryTests(unittest.TestCase):
         self.assertIn("Me llamo Cristopher", result)
         self.assertNotIn("Otro usuario", result)
 
+    def test_fetch_accepts_legacy_note_without_owner_uid(self):
+        uid, token = "uid-123", "fake-id-token-for-test"
+        payload = {
+            "legacy": {"text": "Cristopher Cook Gonzalez", "createdAt": 1},
+            "foreign": {"ownerUid": "other-user", "text": "Otro usuario", "createdAt": 2},
+        }
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, size): return json.dumps(payload).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            return Response()
+
+        result = sara_memory.fetch_relevant_context(
+            "https://example.firebaseio.com", uid, token, "¿Cómo me llamo?", urlopen=fake_urlopen
+        )
+        self.assertIn("Cristopher Cook Gonzalez", result)
+        self.assertNotIn("Otro usuario", result)
+
 
 if __name__ == "__main__":
     unittest.main()
