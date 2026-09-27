@@ -1254,6 +1254,12 @@ def _sara_felo_fallback_reply(
         except sara_memory.SaraMemoryFetchError as exc:
             # Fixed status only. Never log a URL, ID token, note, or response body.
             print(f"sara-memory:read-error={exc.code}")
+        if memory_recall:
+            if memory_context:
+                note_count = memory_context.count("\n") + 1
+                print(f"sara-memory:recall-context=present:notes={note_count}:chars={len(memory_context)}")
+            else:
+                print("sara-memory:recall-context=empty")
     if not fallback_marked and not memory_context:
         if default_reply_seen:
             print("sara-fallback:default-reply-without-marker")
