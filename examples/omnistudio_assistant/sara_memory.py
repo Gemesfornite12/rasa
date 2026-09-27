@@ -132,6 +132,7 @@ def fetch_relevant_context(
     query: str,
     *,
     urlopen=urllib.request.urlopen,
+    status_callback=None,
 ) -> str:
     """Fetch user's notes with the caller's ID token so RTDB rules remain enforced."""
     if not uid or not firebase_id_token:
@@ -168,13 +169,36 @@ def fetch_relevant_context(
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise SaraMemoryFetchError("invalid_json") from None
     if payload is None:
+        if status_callback:
+            status_callback({"records": 0, "dict_records": 0, "owner_match": 0,
+                             "owner_missing": 0, "owner_mismatch": 0,
+                             "nonempty_text": 0, "selected": 0})
         return ""
     if not isinstance(payload, dict):
         raise SaraMemoryFetchError("unexpected_shape")
     # The authenticated, UID-scoped RTDB path and security rules enforce ownership.
     # Accept legacy notes without ownerUid, but reject any explicit mismatch.
+    dict_entries = [entry for entry in payload.values() if isinstance(entry, dict)]
     own_entries = [
-        entry for entry in payload.values()
-        if isinstance(entry, dict) and entry.get("ownerUid") in (None, "", uid)
+        entry for entry in dict_entries
+        if entry.get("ownerUid") in (None, "", uid)
     ]
-    return select_relevant_context(own_entries, query)
+    context = select_relevant_context(own_entries, query)
+    if status_callback:
+        owner_missing = sum(entry.get("ownerUid") in (None, "") for entry in dict_entries)
+        owner_match = sum(entry.get("ownerUid") == uid for entry in dict_entries)
+        owner_mismatch = len(dict_entries) - owner_missing - owner_match
+        nonempty_text = sum(
+            isinstance(entry.get("text"), str) and bool(entry.get("text", "").strip())
+            for entry in own_entries
+        )
+        status_callback({
+            "records": len(payload),
+            "dict_records": len(dict_entries),
+            "owner_match": owner_match,
+            "owner_missing": owner_missing,
+            "owner_mismatch": owner_mismatch,
+            "nonempty_text": nonempty_text,
+            "selected": len(context.splitlines()) if context else 0,
+        })
+    return context

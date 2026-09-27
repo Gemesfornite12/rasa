@@ -76,8 +76,10 @@ class SaraMemoryTests(unittest.TestCase):
             calls.append((request, timeout))
             return Response()
 
+        stats = []
         result = sara_memory.fetch_relevant_context(
-            "https://example.firebaseio.com", uid, token, "¿Cómo me llamo?", urlopen=fake_urlopen
+            "https://example.firebaseio.com", uid, token, "¿Cómo me llamo?",
+            urlopen=fake_urlopen, status_callback=stats.append
         )
         request, timeout = calls[0]
         parsed = urlsplit(request.full_url)
@@ -86,6 +88,11 @@ class SaraMemoryTests(unittest.TestCase):
         self.assertEqual(timeout, 8)
         self.assertIn("Me llamo Cristopher", result)
         self.assertNotIn("Otro usuario", result)
+        self.assertEqual(stats, [{
+            "records": 2, "dict_records": 2, "owner_match": 1, "owner_missing": 0,
+            "owner_mismatch": 1, "nonempty_text": 1, "selected": 1,
+        }])
+        self.assertNotIn("text", stats[0])
 
     def test_fetch_accepts_legacy_note_without_owner_uid(self):
         uid, token = "uid-123", "fake-id-token-for-test"

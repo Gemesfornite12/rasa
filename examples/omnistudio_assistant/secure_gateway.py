@@ -1248,8 +1248,15 @@ def _sara_felo_fallback_reply(
     memory_recall = sara_memory.is_personal_recall_query(message_text)
     if fallback_marked or memory_recall:
         try:
+            def log_memory_counts(counts: dict[str, int]) -> None:
+                fields = ("records", "dict_records", "owner_match", "owner_missing",
+                          "owner_mismatch", "nonempty_text", "selected")
+                summary = ",".join(f"{field}={counts[field]}" for field in fields)
+                print(f"sara-memory:fetch-counts:{summary}")
+
             memory_context = sara_memory.fetch_relevant_context(
-                FIREBASE_DATABASE_URL, uid, firebase_id_token, message_text
+                FIREBASE_DATABASE_URL, uid, firebase_id_token, message_text,
+                status_callback=log_memory_counts,
             )
         except sara_memory.SaraMemoryFetchError as exc:
             # Fixed status only. Never log a URL, ID token, note, or response body.
