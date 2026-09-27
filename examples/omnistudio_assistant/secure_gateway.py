@@ -1244,7 +1244,11 @@ def _sara_felo_fallback_reply(
             fallback_marked = True
             break
     message_text = message.strip()
+    if sara_memory.is_assistant_name_query(message_text):
+        return sara_memory.assistant_name_reply()
+
     memory_context = ""
+    memory_fetch_failed = False
     memory_recall = sara_memory.is_personal_recall_query(message_text)
     if fallback_marked or memory_recall:
         try:
@@ -1260,6 +1264,7 @@ def _sara_felo_fallback_reply(
             )
         except sara_memory.SaraMemoryFetchError as exc:
             # Fixed status only. Never log a URL, ID token, note, or response body.
+            memory_fetch_failed = True
             print(f"sara-memory:read-error={exc.code}")
         if memory_recall:
             if memory_context:
@@ -1267,6 +1272,14 @@ def _sara_felo_fallback_reply(
                 print(f"sara-memory:recall-context=present:notes={note_count}:chars={len(memory_context)}")
             else:
                 print("sara-memory:recall-context=empty")
+
+    if sara_memory.is_user_name_query(message_text):
+        if memory_context:
+            return sara_memory.format_user_name_reply(memory_context)
+        if memory_fetch_failed:
+            return "No pude consultar tus notas ahora; inténtalo de nuevo en un momento."
+        return sara_memory.format_user_name_reply("")
+
     if not fallback_marked and not memory_context:
         if default_reply_seen:
             print("sara-fallback:default-reply-without-marker")
@@ -1701,4 +1714,5 @@ SaraGatewayHandler.do_DELETE = _do_delete_felo
 
 if __name__ == "__main__":
     main()
+
 

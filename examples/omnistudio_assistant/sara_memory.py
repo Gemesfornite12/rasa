@@ -68,6 +68,40 @@ def normalize(text: str) -> str:
     return " ".join("".join(ch for ch in decomposed if not unicodedata.combining(ch)).split())
 
 
+def is_assistant_name_query(query: str) -> bool:
+    normalized = normalize(query)
+    return any(phrase in normalized for phrase in (
+        "como te llamas", "cual es tu nombre", "tu nombre", "quien eres", "eres sara",
+        "what is your name", "what's your name", "what are you called", "who are you",
+    ))
+
+
+def is_user_name_query(query: str) -> bool:
+    normalized = normalize(query)
+    return any(phrase in normalized for phrase in (
+        "como me llamo", "cual es mi nombre", "quien soy", "what is my name",
+        "what's my name", "what do i call myself", "how am i called",
+    ))
+
+
+def assistant_name_reply() -> str:
+    return "Me llamo Sara, soy la asistente de OmniStudio."
+
+
+def format_user_name_reply(context: str) -> str:
+    notes = []
+    for line in context.splitlines():
+        note = line.strip()
+        if note.startswith("•"):
+            note = note[1:].strip()
+        if note:
+            notes.append(note)
+    if not notes:
+        return "No encuentro tu nombre en las notas que guardaste; no voy a adivinarlo."
+    note = notes[0].rstrip(" .")
+    return f"Según la nota que guardaste: {note}."
+
+
 def _tokens(text: str) -> set[str]:
     return {word for word in re.findall(r"[^\W_]+", normalize(text), flags=re.UNICODE)
             if len(word) >= 3 and word not in STOP_WORDS}
@@ -82,7 +116,9 @@ def is_personal_recall_query(query: str) -> bool:
     normalized = normalize(query)
     if not normalized:
         return False
-    if is_overview_query(normalized) or any(phrase in normalized for phrase in DIRECT_RECALL_PHRASES):
+    if is_overview_query(normalized) or is_user_name_query(normalized) or any(
+        phrase in normalized for phrase in DIRECT_RECALL_PHRASES
+    ):
         return True
     words = set(_tokens(normalized))
     asks_to_recall = bool(words & RECALL_WORDS)
@@ -202,3 +238,4 @@ def fetch_relevant_context(
             "selected": len(context.splitlines()) if context else 0,
         })
     return context
+

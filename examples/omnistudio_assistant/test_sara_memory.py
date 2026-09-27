@@ -13,6 +13,32 @@ class SaraMemoryTests(unittest.TestCase):
         self.assertTrue(sara_memory.is_personal_recall_query("¿Cuál es mi nombre?"))
         self.assertFalse(sara_memory.is_personal_recall_query("¿Sabes cómo reparar Firebase para mí?"))
 
+    def test_identity_questions_distinguish_sara_from_user(self):
+        self.assertTrue(sara_memory.is_assistant_name_query("¿Cuál es tu nombre?"))
+        self.assertTrue(sara_memory.is_assistant_name_query("¿Cómo te llamas?"))
+        self.assertTrue(sara_memory.is_assistant_name_query("¿Tu nombre es Sara?"))
+        self.assertFalse(sara_memory.is_user_name_query("¿Cuál es tu nombre?"))
+        self.assertFalse(sara_memory.is_personal_recall_query("¿Cuál es tu nombre?"))
+        self.assertTrue(sara_memory.is_user_name_query("¿Cómo me llamo?"))
+        self.assertTrue(sara_memory.is_user_name_query("¿Cuál es mi nombre?"))
+        self.assertFalse(sara_memory.is_assistant_name_query("¿Cómo me llamo?"))
+
+    def test_assistant_name_reply_is_fixed(self):
+        self.assertEqual(
+            sara_memory.assistant_name_reply(),
+            "Me llamo Sara, soy la asistente de OmniStudio.",
+        )
+
+    def test_user_name_reply_quotes_only_the_top_relevant_note(self):
+        reply = sara_memory.format_user_name_reply("• Me llamo Cristopher\n• Mi correo es cris@example.com")
+        self.assertEqual(reply, "Según la nota que guardaste: Me llamo Cristopher.")
+        self.assertNotIn("Sara", reply)
+
+    def test_user_name_reply_does_not_guess_when_no_note_exists(self):
+        reply = sara_memory.format_user_name_reply("")
+        self.assertIn("no voy a adivinarlo", reply)
+        self.assertNotIn("Sara", reply)
+
     def test_name_question_selects_name_note_without_unrelated_email(self):
         entries = [
             {"ownerUid": "u1", "text": "Mi correo electrónico es cris@example.com", "createdAt": 20},
@@ -118,3 +144,4 @@ class SaraMemoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
