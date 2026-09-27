@@ -40,7 +40,26 @@
     #sendButton { width: 48px; border: 0; border-radius: 12px; background: #6366f1; color: white; font-size: 20px; cursor: pointer; }
     #sendButton:disabled { opacity: .55; cursor: wait; }
     footer { padding: 0 16px 12px; background: #121c31; text-align: center; color: #8492aa; font-size: 10px; }
-    @media (max-width: 520px) { body { padding: 0; } .app { width: 100%; height: 100dvh; min-height: 0; border-radius: 0; border: 0; } header { padding: 13px; } #accountEmail { max-width: 105px; } #messages { padding: 16px 12px; } #composer { gap: 6px; padding: 8px; } .toolButton { width: 38px; height: 40px; } #sendButton { width: 42px; } }
+    #notesToolbar { display: none; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid #26324b; background: #10182a; }
+    #notesButton { border: 1px solid #5964d9; border-radius: 10px; background: #242d53; color: #eef2ff; padding: 8px 12px; font-size: 12px; font-weight: 650; cursor: pointer; }
+    #notesSyncStatus { color: #aab7ce; font-size: 11px; }
+    .notesOverlay { display: none; position: fixed; inset: 0; z-index: 20; place-items: center; padding: 16px; background: #050914dc; }
+    .notesOverlay.open { display: grid; }
+    .notesCard { width: min(100%, 650px); max-height: min(82vh, 760px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #34415d; border-radius: 20px; background: #111a2c; box-shadow: 0 24px 80px #000a; }
+    .notesHeader { display: flex; align-items: flex-start; gap: 16px; padding: 18px 20px; border-bottom: 1px solid #26324b; }
+    .notesHeaderText { flex: 1; min-width: 0; }
+    .notesHeader h2 { margin: 0 0 6px; font-size: 18px; }
+    .notesHeader p { margin: 0; color: #aab7ce; font-size: 12px; line-height: 1.5; }
+    #notesStatus { margin: 0; padding: 12px 20px 6px; color: #b9c5da; font-size: 12px; }
+    #notesList { overflow: auto; padding: 10px 16px 18px; }
+    .noteRow { display: flex; align-items: flex-start; gap: 12px; margin: 8px 0; padding: 13px; border: 1px solid #2c3a55; border-radius: 13px; background: #151f33; }
+    .noteContent { flex: 1; min-width: 0; }
+    .noteText { margin: 0; color: #f1f5f9; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .noteDate { display: block; margin-top: 8px; color: #8fa0ba; font-size: 10px; }
+    .deleteNoteButton { flex: 0 0 auto; border: 1px solid #7f3c50; border-radius: 9px; background: #3b1c2a; color: #fecdd3; padding: 7px 9px; font-size: 11px; cursor: pointer; }
+    .deleteNoteButton:disabled { opacity: .55; cursor: wait; }
+    .emptyNotes { padding: 24px 12px; color: #aab7ce; text-align: center; font-size: 13px; line-height: 1.5; }
+    @media (max-width: 520px) { body { padding: 0; } .app { width: 100%; height: 100dvh; min-height: 0; border-radius: 0; border: 0; } header { padding: 13px; } #accountEmail { max-width: 105px; } #messages { padding: 16px 12px; } #composer { gap: 6px; padding: 8px; } .toolButton { width: 38px; height: 40px; } #sendButton { width: 42px; } #notesToolbar { padding: 8px 12px; } .notesOverlay { padding: 0; } .notesCard { width: 100%; height: 100dvh; max-height: none; border-radius: 0; border: 0; } .notesHeader { padding: 16px 14px; } #notesStatus { padding: 10px 14px 4px; } #notesList { padding: 8px 10px 16px; } .noteRow { gap: 8px; padding: 11px; } }
   </style>
 </head>
 <body>
@@ -51,6 +70,25 @@
       <div class="status" id="connectionStatus">Conectando…</div>
       <div id="account"><span id="accountEmail"></span><button id="clearHistoryButton" class="smallButton" type="button">Borrar historial</button><button id="signOutButton" class="smallButton" type="button">Salir</button></div>
     </header>
+
+    <section id="notesToolbar" aria-label="Aprendizaje del asistente">
+      <button id="notesButton" type="button" aria-haspopup="dialog">Ver mis notas</button>
+      <span id="notesSyncStatus" role="status">La biblioteca se sincroniza en tiempo real.</span>
+    </section>
+
+    <div id="notesOverlay" class="notesOverlay" role="dialog" aria-modal="true" aria-labelledby="notesTitle" aria-hidden="true">
+      <section class="notesCard">
+        <div class="notesHeader">
+          <div class="notesHeaderText">
+            <h2 id="notesTitle">Aprendizaje del asistente</h2>
+            <p>Tus notas aprobadas son privadas de esta cuenta. La lista se actualiza en tiempo real con OmniStudio si ambas sesiones usan la misma cuenta de Firebase.</p>
+          </div>
+          <button id="closeNotesButton" class="smallButton" type="button">Cerrar</button>
+        </div>
+        <p id="notesStatus" role="status">Cargando notas…</p>
+        <div id="notesList" aria-live="polite"></div>
+      </section>
+    </div>
 
     <section id="authPanel" aria-labelledby="authTitle">
       <h1 id="authTitle">Inicia sesión</h1>
@@ -89,7 +127,7 @@
       onAuthStateChanged, signOut, setPersistence, browserSessionPersistence
     } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-auth.js";
     import {
-      getDatabase, ref, push, get, query, orderByChild, limitToLast, remove
+      getDatabase, ref, push, get, query, orderByChild, limitToLast, remove, onValue
     } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-database.js";
 
     const firebaseConfig = {
@@ -118,6 +156,13 @@
     const connectionStatus = document.getElementById('connectionStatus');
     const account = document.getElementById('account');
     const clearHistoryButton = document.getElementById('clearHistoryButton');
+    const notesToolbar = document.getElementById('notesToolbar');
+    const notesButton = document.getElementById('notesButton');
+    const notesOverlay = document.getElementById('notesOverlay');
+    const closeNotesButton = document.getElementById('closeNotesButton');
+    const notesStatus = document.getElementById('notesStatus');
+    const notesSyncStatus = document.getElementById('notesSyncStatus');
+    const notesList = document.getElementById('notesList');
     const imageButton = document.getElementById('imageButton');
     const imageInput = document.getElementById('imageInput');
     const audioButton = document.getElementById('audioButton');
@@ -126,6 +171,8 @@
     const toolsButton = document.getElementById('toolsButton');
     let codeMode = false;
     let toolMode = false;
+    let stopNotesListener = null;
+    let activeNotesUid = '';
 
     function authErrorText(code) {
       if (code === 'auth/popup-blocked') return 'El navegador bloqueó la ventana. Permite la ventana emergente e inténtalo otra vez.';
@@ -189,6 +236,106 @@
       return ordered.length > 0;
     }
 
+    function closeNotesPanel() {
+      notesOverlay.classList.remove('open');
+      notesOverlay.setAttribute('aria-hidden', 'true');
+      notesButton.focus();
+    }
+
+    notesButton.addEventListener('click', () => {
+      if (!auth.currentUser) return;
+      notesOverlay.classList.add('open');
+      notesOverlay.setAttribute('aria-hidden', 'false');
+      closeNotesButton.focus();
+    });
+    closeNotesButton.addEventListener('click', closeNotesPanel);
+    notesOverlay.addEventListener('click', event => {
+      if (event.target === notesOverlay) closeNotesPanel();
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && notesOverlay.classList.contains('open')) closeNotesPanel();
+    });
+
+    function renderKnowledgeNotes(user, entries) {
+      notesList.replaceChildren();
+      if (auth.currentUser?.uid !== user.uid) return;
+      if (!entries.length) {
+        const empty = document.createElement('div');
+        empty.className = 'emptyNotes';
+        empty.textContent = 'No hay notas guardadas en esta cuenta. Si OmniStudio sí muestra notas, puede que las sesiones web y móvil usen identidades de Firebase distintas aunque tengan el mismo correo.';
+        notesList.appendChild(empty);
+        return;
+      }
+      entries.forEach(entry => {
+        const row = document.createElement('article');
+        row.className = 'noteRow';
+        const content = document.createElement('div');
+        content.className = 'noteContent';
+        const text = document.createElement('p');
+        text.className = 'noteText';
+        text.textContent = entry.text;
+        content.appendChild(text);
+        if (entry.createdAt > 0 && entry.createdAt < 8640000000000000) {
+          const savedAt = new Date(entry.createdAt);
+          if (!Number.isNaN(savedAt.getTime())) {
+            const date = document.createElement('time');
+            date.className = 'noteDate';
+            date.dateTime = savedAt.toISOString();
+            date.textContent = `Guardada ${savedAt.toLocaleString('es-CR', { dateStyle: 'medium', timeStyle: 'short' })}`;
+            content.appendChild(date);
+          }
+        }
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'deleteNoteButton';
+        deleteButton.type = 'button';
+        deleteButton.textContent = 'Borrar';
+        deleteButton.setAttribute('aria-label', 'Borrar esta nota');
+        deleteButton.addEventListener('click', async () => {
+          const activeUser = auth.currentUser;
+          if (!activeUser || activeUser.uid !== user.uid || !confirm('¿Borrar esta nota de Aprendizaje del asistente? Se eliminará también de la biblioteca sincronizada en OmniStudio.')) return;
+          deleteButton.disabled = true;
+          try {
+            await remove(ref(db, `sara_knowledge/${user.uid}/${entry.id}`));
+          } catch {
+            notesStatus.textContent = 'No se pudo borrar la nota. Revisa tu conexión e inténtalo otra vez.';
+            deleteButton.disabled = false;
+          }
+        });
+        row.append(content, deleteButton);
+        notesList.appendChild(row);
+      });
+    }
+
+    function subscribeToKnowledgeNotes(user) {
+      if (stopNotesListener) stopNotesListener();
+      stopNotesListener = null;
+      activeNotesUid = user.uid;
+      notesStatus.textContent = 'Sincronizando tus notas…';
+      notesSyncStatus.textContent = 'Conectando con la biblioteca…';
+      stopNotesListener = onValue(ref(db, `sara_knowledge/${user.uid}`), snapshot => {
+        if (auth.currentUser?.uid !== user.uid) return;
+        const raw = snapshot.val();
+        const entries = Object.entries(raw && typeof raw === 'object' ? raw : {})
+          .map(([id, note]) => ({
+            id,
+            text: note && typeof note.text === 'string' ? note.text.trim() : '',
+            ownerUid: note && note.ownerUid,
+            createdAt: note && Number.isFinite(note.createdAt) ? note.createdAt : 0
+          }))
+          .filter(note => note.text && (!note.ownerUid || note.ownerUid === user.uid))
+          .sort((a, b) => b.createdAt - a.createdAt);
+        const countLabel = `${entries.length} ${entries.length === 1 ? 'nota' : 'notas'}`;
+        notesStatus.textContent = entries.length ? `${countLabel} · sincronización en tiempo real activa` : 'No hay notas guardadas en esta cuenta.';
+        notesSyncStatus.textContent = `${countLabel} · sincronización en tiempo real`;
+        renderKnowledgeNotes(user, entries);
+      }, () => {
+        if (auth.currentUser?.uid !== user.uid) return;
+        notesStatus.textContent = 'No se pudieron cargar las notas de esta cuenta.';
+        notesSyncStatus.textContent = 'Sin sincronización';
+        notesList.replaceChildren();
+      });
+    }
+
     clearHistoryButton.addEventListener('click', async () => {
       const user = auth.currentUser;
       if (!user || !confirm('¿Borrar todo tu historial de chat con Sara?')) return;
@@ -211,9 +358,11 @@
       messages.style.display = loggedIn ? 'flex' : 'none';
       composer.style.display = loggedIn ? 'flex' : 'none';
       account.style.display = loggedIn ? 'flex' : 'none';
+      notesToolbar.style.display = loggedIn ? 'flex' : 'none';
       connectionStatus.textContent = loggedIn ? 'Sesión lista' : 'Acceso protegido';
       document.getElementById('accountEmail').textContent = user?.email || 'Sesión activa';
       if (loggedIn) {
+        if (activeNotesUid !== user.uid) subscribeToKnowledgeNotes(user);
         messages.replaceChildren();
         chatError.textContent = '';
         try {
@@ -223,8 +372,17 @@
           addMessage('Hola, soy Sara. Rasa responde primero; Cloudflare atiende el fallback. Puedes adjuntar imágenes o audios y activar ayuda con código.', 'bot');
           chatError.textContent = 'No se pudo cargar el historial. Puedes seguir chateando, pero quizá no se sincronice.';
         }
+      } else {
+        if (stopNotesListener) stopNotesListener();
+        stopNotesListener = null;
+        activeNotesUid = '';
+        notesOverlay.classList.remove('open');
+        notesOverlay.setAttribute('aria-hidden', 'true');
+        notesList.replaceChildren();
+        notesStatus.textContent = 'Inicia sesión para ver tus notas.';
+        notesSyncStatus.textContent = 'Biblioteca privada';
+        messages.replaceChildren();
       }
-      if (!loggedIn) messages.replaceChildren();
     });
 
     function readFileAsBase64(file) {
@@ -411,3 +569,4 @@
   </script>
 </body>
 </html>
+
