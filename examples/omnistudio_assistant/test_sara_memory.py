@@ -1,0 +1,73 @@
+import io
+import json
+import unittest
+from urllib.parse import parse_qs, urlsplit
+
+import sara_memory
+
+
+class SaraMemoryTests(unittest.TestCase):
+    def test_personal_recall_recognizes_accents_and_name_questions(self):
+        self.assertTrue(sara_memory.is_personal_recall_query("¿Recuerdas cómo me llamo?"))
+        self.assertTrue(sara_memory.is_personal_recall_query("¿Qué sabes sobre mí?"))
+        self.assertTrue(sara_memory.is_personal_recall_query("¿Cuál es mi nombre?"))
+        self.assertFalse(sara_memory.is_personal_recall_query("¿Sabes cómo reparar Firebase para mí?"))
+
+    def test_name_question_selects_name_note_without_unrelated_email(self):
+        entries = [
+            {"ownerUid": "u1", "text": "Mi correo electrónico es cris@example.com", "createdAt": 20},
+            {"ownerUid": "u1", "text": "Me llamo Cristopher", "createdAt": 10},
+        ]
+        result = sara_memory.select_relevant_context(entries, "¿Recuerdas cómo me llamo?")
+        self.assertIn("Me llamo Cristopher", result)
+        self.assertNotIn("correo", result)
+
+    def test_overview_selects_recent_approved_notes(self):
+        entries = [
+            {"ownerUid": "u1", "text": "Dato anterior", "createdAt": 1},
+            {"ownerUid": "u1", "text": "Me llamo Cristopher", "createdAt": 3},
+            {"ownerUid": "u1", "text": "Uso OmniStudio", "createdAt": 2},
+        ]
+        result = sara_memory.select_relevant_context(entries, "¿Qué sabes sobre mí?")
+        self.assertIn("Me llamo Cristopher", result)
+        self.assertIn("Uso OmniStudio", result)
+        self.assertIn("Dato anterior", result)
+
+    def test_rejects_non_firebase_host_before_sending_token(self):
+        with self.assertRaises(sara_memory.SaraMemoryFetchError) as error:
+            sara_memory.fetch_relevant_context(
+                "https://attacker.example", "uid-123", "fake-token", "¿Qué sabes sobre mí?"
+            )
+        self.assertEqual(error.exception.code, "invalid_database_url")
+
+    def test_fetch_uses_uid_and_user_id_token_and_filters_owner(self):
+        uid, token = "uid-123", "fake-id-token-for-test"
+        payload = {
+            "a": {"ownerUid": uid, "text": "Me llamo Cristopher", "createdAt": 1},
+            "b": {"ownerUid": "other-user", "text": "Otro usuario", "createdAt": 2},
+        }
+        calls = []
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, size): return json.dumps(payload).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            calls.append((request, timeout))
+            return Response()
+
+        result = sara_memory.fetch_relevant_context(
+            "https://example.firebaseio.com", uid, token, "¿Cómo me llamo?", urlopen=fake_urlopen
+        )
+        request, timeout = calls[0]
+        parsed = urlsplit(request.full_url)
+        self.assertEqual(parsed.path, "/sara_knowledge/uid-123.json")
+        self.assertEqual(parse_qs(parsed.query)["auth"], [token])
+        self.assertEqual(timeout, 8)
+        self.assertIn("Me llamo Cristopher", result)
+        self.assertNotIn("Otro usuario", result)
+
+
+if __name__ == "__main__":
+    unittest.main()
