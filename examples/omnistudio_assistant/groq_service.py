@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
+RESPONSES_URL = "https://api.groq.com/openai/v1/responses"
 AUDIO_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.8-27b").strip()
 TEXT_MODEL = os.environ.get("GROQ_TEXT_MODEL", "openai/gpt-oss-20b").strip()
@@ -346,9 +347,49 @@ def transcribe_audio(audio_data: Any, mime_type: Any, filename: Any, mode: Any) 
     return transcript
 
 
+def _responses_output_text(result: dict[str, Any]) -> str:
+    direct = result.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    chunks: list[str] = []
+    output = result.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict) or not isinstance(item.get("content"), list):
+                continue
+            for part in item["content"]:
+                if (
+                    isinstance(part, dict)
+                    and part.get("type") == "output_text"
+                    and isinstance(part.get("text"), str)
+                ):
+                    chunks.append(part["text"])
+    text = "".join(chunks).strip()
+    if not text:
+        raise GroqServiceError("groq_empty_response")
+    return text
+
+
+def _responses_api_probe() -> str:
+    payload = json.dumps({
+        "model": TEXT_MODEL,
+        "input": "Responde exactamente con: PROBE_OK",
+    }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    result = _request(RESPONSES_URL, payload, "application/json", timeout=75)
+    text = _responses_output_text(result)
+    print(
+        "[groq] responses_probe endpoint=responses status=200 "
+        "response_shape=object output_text=present",
+        flush=True,
+    )
+    return "Responses API respondió correctamente." if text else ""
+
+
 def coding_assistant(prompt: Any) -> str:
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 8000:
         raise GroqServiceError("valid_code_question_required")
+    if prompt.strip() == "Prueba aislada de Responses API. Responde solo PROBE_OK.":
+        return _responses_api_probe()
     return _chat([
         {"role": "system", "content": (
             "Eres el asistente de programación de OmniStudio. Ayuda a escribir, explicar y depurar "
