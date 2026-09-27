@@ -22,6 +22,17 @@ class SaraMemoryTests(unittest.TestCase):
         self.assertIn("Me llamo Cristopher", result)
         self.assertNotIn("correo", result)
 
+    def test_name_query_matches_third_person_se_llama_note(self):
+        entries = [
+            {"ownerUid": "u1", "text": "Mi correo electrónico es cris@example.com", "createdAt": 20},
+            {"ownerUid": "u1", "text": "El usuario se llama Cristopher Cook Gonzalez", "createdAt": 10},
+        ]
+        for query in ("¿Cómo me llamo?", "¿Cuál es mi nombre?", "¿Cuál es mi nombre completo?"):
+            with self.subTest(query=query):
+                result = sara_memory.select_relevant_context(entries, query)
+                self.assertIn("El usuario se llama Cristopher Cook Gonzalez", result)
+                self.assertNotIn("correo", result)
+
     def test_overview_selects_recent_approved_notes(self):
         entries = [
             {"ownerUid": "u1", "text": "Dato anterior", "createdAt": 1},

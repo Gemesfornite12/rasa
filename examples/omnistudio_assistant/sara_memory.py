@@ -43,7 +43,10 @@ STOP_WORDS = {
     "are", "my", "of", "to", "a", "an", "in", "on", "it", "i", "am", "tell",
 }
 SYNONYMS = (
-    ({"nombre", "name", "llamo", "called"}, {"nombre", "name", "llamo", "called"}),
+    (
+        {"nombre", "name", "llamo", "llama", "llamarse", "llamado", "llamada", "called"},
+        {"nombre", "name", "llamo", "llama", "llamarse", "llamado", "llamada", "called"},
+    ),
     ({"correo", "email", "e-mail"}, {"correo", "email", "e-mail"}),
     ({"telefono", "phone", "celular", "mobile"}, {"telefono", "phone", "celular", "mobile"}),
     ({"cumpleanos", "birthday", "nacimiento", "birth"}, {"cumpleanos", "birthday", "nacimiento", "birth"}),
