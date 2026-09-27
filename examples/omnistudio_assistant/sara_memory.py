@@ -118,8 +118,10 @@ def select_relevant_context(entries: list[dict[str, Any]], query: str) -> str:
         ranked = [(len(_tokens(text) & terms), created_at, text) for text, created_at in valid]
         selected = [text for score, _, text in sorted(ranked, key=lambda item: (item[0], item[1]), reverse=True) if score > 0][:MAX_CONTEXT_ENTRIES]
         if not selected and is_personal_recall_query(query):
-            # Avoid sending unrelated notes for a specific fact question.
-            return ""
+            # A personal recall request may use wording absent from the saved note.
+            # Supply a small, recent slice of this same user's approved notes;
+            # the fallback prompt must answer only from relevant entries.
+            selected = [text for text, _ in valid[:MAX_CONTEXT_ENTRIES]]
     return "\n".join(f"• {text}" for text in selected)[:MAX_CONTEXT_CHARS]
 
 

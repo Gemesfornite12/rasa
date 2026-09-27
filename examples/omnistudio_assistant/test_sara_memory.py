@@ -33,6 +33,14 @@ class SaraMemoryTests(unittest.TestCase):
                 self.assertIn("El usuario se llama Cristopher Cook Gonzalez", result)
                 self.assertNotIn("correo", result)
 
+    def test_personal_recall_falls_back_to_recent_notes_when_wording_does_not_match(self):
+        entries = [
+            {"ownerUid": "u1", "text": "Preferred language: Spanish", "createdAt": 20},
+            {"ownerUid": "u1", "text": "Cristopher Cook Gonzalez", "createdAt": 10},
+        ]
+        result = sara_memory.select_relevant_context(entries, "¿Cómo me llamo?")
+        self.assertIn("Cristopher Cook Gonzalez", result)
+
     def test_overview_selects_recent_approved_notes(self):
         entries = [
             {"ownerUid": "u1", "text": "Dato anterior", "createdAt": 1},
