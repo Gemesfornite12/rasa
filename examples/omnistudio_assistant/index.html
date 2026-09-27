@@ -32,6 +32,9 @@
     .bot { align-self: flex-start; background: #202b42; border-bottom-left-radius: 5px; }
     .user { align-self: flex-end; background: #5557d9; border-bottom-right-radius: 5px; }
     .time { display: block; margin-top: 6px; opacity: .62; font-size: 10px; text-align: right; }
+    .messageActions { display: flex; justify-content: flex-end; margin-top: 7px; }
+    .saveNoteButton { border: 1px solid #5964d9; border-radius: 8px; background: #252e50; color: #dbeafe; padding: 5px 8px; font-size: 10px; cursor: pointer; }
+    .saveNoteButton:disabled { opacity: .6; cursor: default; }
     #composer { display: none; align-items: center; gap: 8px; padding: 12px; border-top: 1px solid #26324b; background: #121c31; }
     #messageInput { flex: 1; min-width: 0; }
     .toolButton { flex: 0 0 auto; width: 42px; height: 42px; border: 1px solid #475569; border-radius: 12px; background: #17243a; color: #e2e8f0; font-size: 18px; cursor: pointer; }
@@ -127,7 +130,7 @@
       onAuthStateChanged, signOut, setPersistence, browserSessionPersistence
     } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-auth.js";
     import {
-      getDatabase, ref, push, get, query, orderByChild, limitToLast, remove, onValue
+      getDatabase, ref, push, get, query, orderByChild, limitToLast, remove, onValue, set
     } from "https://www.gstatic.com/firebasejs/11.6.0/firebase-database.js";
 
     const firebaseConfig = {
@@ -144,6 +147,8 @@
     const auth = getAuth(app);
     const db = getDatabase(app);
     const HISTORY_LIMIT = 100;
+    const MAX_NOTE_ENTRIES = 100;
+    const MAX_NOTE_CHARS = 2000;
     const persistenceReady = setPersistence(auth, browserSessionPersistence).catch(() => {});
     const provider = new GoogleAuthProvider();
     const authPanel = document.getElementById('authPanel');
@@ -207,6 +212,15 @@
       time.className = 'time';
       time.textContent = new Date(timestamp).toLocaleTimeString('es-CR', { hour: '2-digit', minute: '2-digit' });
       bubble.appendChild(time);
+      const actions = document.createElement('div');
+      actions.className = 'messageActions';
+      const saveButton = document.createElement('button');
+      saveButton.className = 'saveNoteButton';
+      saveButton.type = 'button';
+      saveButton.textContent = 'Guardar como nota';
+      saveButton.addEventListener('click', () => saveMessageAsNote(text, saveButton));
+      actions.appendChild(saveButton);
+      bubble.appendChild(actions);
       messages.appendChild(bubble);
       messages.scrollTop = messages.scrollHeight;
     }
@@ -218,6 +232,53 @@
         text: text.slice(0, 4000),
         createdAt: Date.now()
       });
+    }
+
+    async function saveMessageAsNote(text, button) {
+      const user = auth.currentUser;
+      const cleanText = typeof text === 'string' ? text.trim() : '';
+      if (!user || !cleanText) {
+        chatError.textContent = 'Inicia sesión para guardar notas del asistente.';
+        return;
+      }
+      const noteText = cleanText.slice(0, MAX_NOTE_CHARS);
+      const consentText = cleanText.length > MAX_NOTE_CHARS
+        ? '¿Guardar este mensaje en Aprendizaje del asistente? Solo se guardarán los primeros 2.000 caracteres.'
+        : '¿Guardar este mensaje en Aprendizaje del asistente?';
+      if (!confirm(consentText)) return;
+
+      button.disabled = true;
+      chatError.textContent = '';
+      try {
+        const notesRef = ref(db, `sara_knowledge/${user.uid}`);
+        const snapshot = await get(notesRef);
+        if (auth.currentUser?.uid !== user.uid) throw new Error('session_changed');
+        const raw = snapshot.val();
+        const existing = Object.values(raw && typeof raw === 'object' ? raw : {})
+          .filter(note => note && typeof note.text === 'string' && (!note.ownerUid || note.ownerUid === user.uid));
+        if (existing.some(note => note.text.trim().toLowerCase() === noteText.toLowerCase())) {
+          button.textContent = 'Ya guardada';
+          chatError.textContent = 'Esa nota ya está guardada.';
+          return;
+        }
+        if (existing.length >= MAX_NOTE_ENTRIES) {
+          button.disabled = false;
+          chatError.textContent = 'La biblioteca tiene 100 notas. Borra una antes de guardar otra.';
+          return;
+        }
+        const noteRef = push(notesRef);
+        await set(noteRef, {
+          id: noteRef.key,
+          ownerUid: user.uid,
+          text: noteText,
+          createdAt: Date.now()
+        });
+        button.textContent = 'Guardada';
+        chatError.textContent = '';
+      } catch {
+        button.disabled = false;
+        chatError.textContent = 'No se pudo guardar la nota en Firebase. Inténtalo otra vez.';
+      }
     }
 
     async function loadHistory(user) {
