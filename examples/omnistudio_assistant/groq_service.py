@@ -116,6 +116,7 @@ def _request(url: str, payload: bytes, content_type: str, timeout: int = 60) -> 
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": content_type,
             "Accept": "application/json",
+            "User-Agent": "OmniStudio-Sara-Gateway/1.0",
         },
         method="POST",
     )
