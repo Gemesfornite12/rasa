@@ -335,7 +335,8 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
         elif code in {
             "media_required", "invalid_media", "invalid_image", "unsupported_image_type",
             "unsupported_audio_type", "one_to_three_images_required", "valid_code_question_required",
-            "valid_tools_question_required",
+            "valid_tools_question_required", "valid_workspace_query_required",
+            "invalid_workspace_connectors", "invalid_workspace_access_token",
         }:
             status = 400
         else:
@@ -619,6 +620,17 @@ class SaraGatewayHandler(BaseHTTPRequestHandler):
 
             try:
                 text = groq_service.tool_assisted_reply(body.get("text"), groq_tool_search)
+                self._send_json(200, {"text": text})
+            except groq_service.GroqServiceError as exc:
+                self._send_groq_error(exc)
+            return
+
+        if route == "/api/rasa/groq/workspace":
+            if not groq_service.allow_request(uid):
+                self._send_json(429, {"error": "groq_rate_limited"})
+                return
+            try:
+                text = groq_service.workspace_connector_reply(body.get("text"), body.get("connectors"))
                 self._send_json(200, {"text": text})
             except groq_service.GroqServiceError as exc:
                 self._send_groq_error(exc)

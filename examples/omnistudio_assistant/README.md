@@ -33,3 +33,15 @@ No compartas ni publiques `doc_ref`. Está ligado al UID de Firebase y no autori
 ## Pruebas
 
 Las pruebas automatizadas usan respuestas simuladas: no llaman a Felo ni consumen créditos. Probar las funciones desde OmniStudio requiere una sesión autenticada real de Firebase y la app apuntando al gateway desplegado.
+
+## Conectores Google Workspace de Groq
+
+La ruta `POST /api/rasa/groq/workspace` acepta únicamente los conectores de solo lectura Gmail, Google Calendar y Google Drive que el usuario elige para esa consulta. Android obtiene un token de acceso corto mediante Google Identity Services y lo envía en memoria junto con la petición autenticada por Firebase. El gateway lo reenvía a Groq, no lo registra ni lo guarda. No se debe enviar ningún token si el usuario no seleccionó ese conector y pidió una consulta que lo requiera.
+
+Scopes requeridos por los conectores de Groq:
+
+- Gmail: `https://www.googleapis.com/auth/gmail.readonly`
+- Calendar: `https://www.googleapis.com/auth/calendar.events`
+- Drive: `https://www.googleapis.com/auth/drive.readonly`
+
+Configura por separado la pantalla de consentimiento y el cliente Android de Google OAuth para el paquete `com.aistudio.omnistudio.wkspea`, con las huellas SHA-1 de debug y Play App Signing. Para pruebas, añade las cuentas autorizadas como usuarios de prueba. Gmail y Drive requieren verificación de Google para ofrecerlos a usuarios externos en producción. No incluyas tokens de usuario, client secrets ni claves privadas en Android o GitHub. Los permisos se piden solo cuando el usuario conecta/selecciona un servicio; la app no accede en segundo plano.
