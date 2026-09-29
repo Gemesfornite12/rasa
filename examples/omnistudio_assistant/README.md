@@ -41,7 +41,7 @@ La ruta `POST /api/rasa/groq/workspace` acepta únicamente los conectores de sol
 Scopes requeridos por los conectores de Groq:
 
 - Gmail: `https://www.googleapis.com/auth/gmail.readonly`
-- Calendar: `https://www.googleapis.com/auth/calendar.events`
+- Calendar: OmniStudio solicita `https://www.googleapis.com/auth/calendar.events.readonly` para limitarse a lectura. La documentación actual de Groq lista `calendar.events`; verifica que el conector acepte el scope más limitado. Si no lo acepta, deja Calendar desactivado en vez de ampliar permisos sin aprobación explícita.
 - Drive: `https://www.googleapis.com/auth/drive.readonly`
 
 Configura por separado la pantalla de consentimiento y el cliente Android de Google OAuth para el paquete `com.aistudio.omnistudio.wkspea`, con las huellas SHA-1 de debug y Play App Signing. Para pruebas, añade las cuentas autorizadas como usuarios de prueba. Gmail y Drive requieren verificación de Google para ofrecerlos a usuarios externos en producción. No incluyas tokens de usuario, client secrets ni claves privadas en Android o GitHub. Los permisos se piden solo cuando el usuario conecta/selecciona un servicio; la app no accede en segundo plano.
